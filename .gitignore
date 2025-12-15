@@ -1,0 +1,7 @@
+node_modules
+.env
+Dockerfile
+keys
+sessions
+yarn.lock
+package-lock.json
