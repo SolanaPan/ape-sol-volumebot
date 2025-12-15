@@ -240,6 +240,7 @@ export const getBotPanelMsg = async (
       dexId: botOnSolana?.dexId || "",
       maxBuy: botOnSolana.maxBuy || 0.5,
       delayTime: botOnSolana.delayTime || 5,
+      workingTime: botOnSolana.workingTime || 86400,
       volumeMade: botOnSolana?.volumeMade || 0,
       makerMade: botOnSolana?.makerMade || 0,
       holderMade: botOnSolana?.holderMade || 0,

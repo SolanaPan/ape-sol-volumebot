@@ -184,6 +184,14 @@ export const setDelay = async(userId: string, delay:number) => {
     });
 }
 
+export const setWorkingTime = async(userId: string, workingTime:number) => {
+    return new Promise(async (resolve, reject) => {
+        await volumebotModel.findOneAndUpdate({ userId: userId }, { workingTime: workingTime });
+
+        resolve(true);
+    });
+}
+
 export const getOneKVolPrice = async() => {
   return new Promise(async (resolve, reject) => {
     AdminModel.findOne().then(async (record) => {

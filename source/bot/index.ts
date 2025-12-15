@@ -123,6 +123,7 @@ import {
   TARGET_MAKER_MAX,
   TARGET_HOLDER_MAX,
   ADMIN_CHANNEL,
+  WorkingTimeNotifies,
 } from "./const";
 import { SystemProgram } from "@solana/web3.js";
 import { sleep } from "../utils/common";
@@ -1045,7 +1046,21 @@ const splMenu = new Menu("SPL_menu")
       refreshMainPanelMsg(ctx);
     }
   })
-  .row()  
+  .row()
+  .text("🏃 Working Time", async (ctx: any) => {
+    resetNotifies(ctx.from.id);
+
+    // show set max buy message
+    try {
+      const replyMsg = await ctx.reply("📨 <b>Working Time: </b>\n\n3600 means bot works for 1 hour.\n\nSend any digit from <code>60</code>... to ... <code>86400</code>", {parse_mode: "HTML", reply_markup: {force_reply: true}});
+      WorkingTimeNotifies.add(ctx.from.id);
+
+      replyMsgCache.set(ctx.from.id, replyMsg.message_id);
+    } catch (err) {
+      console.error(err);
+    }
+  })
+  .row()
   .text(async (ctx: any) => {
     const botOnSolana: any = await getVolumeBot(ctx.from.id);
     const boostType = botOnSolana.boostType;
@@ -1567,6 +1582,26 @@ bot.on("message", async (ctx: any) => {
     }
 
     closeReply(ctx);
+    return;
+  } else if (WorkingTimeNotifies.has(userId)) {
+    // update max buy amount
+    try {
+      // validate input
+      if (Number.isNaN(Number(inputText)) || Number(inputText) < 60) {
+        toast(ctx, "❌ Invalid working time. Please enter a valid number.");
+        return;
+      }
+
+      await database.setWorkingTime(userId, inputText);
+
+      closeReply(ctx);
+      toast(ctx, "✅  Working Time set successfully.");
+      WorkingTimeNotifies.delete(userId);
+    } catch (err) {
+      console.error(err);
+      toast(ctx, "❌ Error on setting working time!");
+    }
+    
     return;
   } else if (MaxBuyNotifies.has(userId)) {
     // update max buy amount

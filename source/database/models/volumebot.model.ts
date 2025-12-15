@@ -37,6 +37,7 @@ const volumeBotSchema = new mongoose.Schema({
 	maxTxAmount: { type: Number, default: 1 },
 	startSolAmount: { type: Number, default: 0 },
 	delayTime: { type: Number, default: 30 }, // 30 seconds
+	workingTime: { type: Number, default: 86400 }, // 24 hours
 }, { timestamps: true });
 
 export default mongoose.model("VolumeBot", volumeBotSchema);

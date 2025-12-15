@@ -66,6 +66,7 @@ export const GenerateNewWallets = new Set<number>();
 export const replyMsgCache = new Map<any, any>();
 
 export const DelayNotifies = new Set<number>();
+export const WorkingTimeNotifies = new Set<number>();
 export const MaxBuyNotifies = new Set<number>();
 export const promoTextNotifies = new Set<number>();
 export const promoCodeNotifies = new Set<number>();
@@ -106,6 +107,7 @@ export const BOT_STATUS = {
   STOPPED_DUE_TO_SIMULATION_ERROR: 7,
   STOPPED_DUE_TO_MANUAL_STOP: 8,
   ARCHIVED_TARGET: 9,
+  EXPIRED_WORKING_TIME: 10,
 };
 
 export const quoteToken = new Token(
@@ -119,6 +121,7 @@ export const quoteToken = new Token(
 export const resetNotifies = (id: any) => {
   MaxBuyNotifies.delete(id);
   DelayNotifies.delete(id);
+  WorkingTimeNotifies.delete(id);
   promoCodeNotifies.delete(id);
   promoTextNotifies.delete(id);
 

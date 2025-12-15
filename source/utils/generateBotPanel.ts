@@ -29,6 +29,7 @@ interface BotStats {
     dexId: string;
     maxBuy: number,
     delayTime: number,
+    workingTime: number,
     targetVolume: number;
     targetMaker: number;
     targetHolder: number;
@@ -126,6 +127,7 @@ export async function generateSolanaBotMessage(
   
   🛒 <b>Max Buy</b> : <code>${formatNumberWithUnit(botStats.maxBuy, 1)}</code> SOL
   🏃 <b>Speed</b> : buy/sell in every <code>${formatNumberWithUnit(botStats.delayTime, 0)}</code> seconds
+  💥 <b>Working Time</b> : <code>${formatTime(botStats.workingTime)}</code>
 
   🔖 <b>Volume Made</b>: <code>${formatNumberWithUnit(botStats.volumeMade * 1.2)} / ${formatUSD(botStats.targetVolume)}</code>
   🔖 <b>Maker Made</b>: <code>${botStats.makerMade} / ${botStats.targetMaker}</code>

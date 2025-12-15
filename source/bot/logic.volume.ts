@@ -166,7 +166,7 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
     const botOnSolana = await VolumeBotModel.findOne({
       userId: curbotOnSolana.userId,
     })
-      .populate("mainWallet token targetVolume enable usedWallet volumeMade delayTime maxBuy")
+      .populate("mainWallet token targetVolume enable usedWallet volumeMade delayTime maxBuy workedSeconds workingTime txDone startSolAmount")
       .lean();
 
     if (!botOnSolana || botOnSolana.enable == false || initialBundleFailedCount > MAX_BUNDLE_FAILED_COUNT) {
@@ -175,7 +175,7 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
     // Extract bot parameters
     let { workedSeconds = 0, delayTime = 0, volumeMade = 0, txDone = 0,
-      targetVolume = 0, usedWallet = 0, startSolAmount = 0 } = botOnSolana;
+      targetVolume = 0, usedWallet = 0, startSolAmount = 0, workingTime = 0 } = botOnSolana;
     let newSpentSeconds = 0;
 
     try {
@@ -270,7 +270,7 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       const endTime = Date.now();
       newSpentSeconds = (endTime - startTime) / 1000;
-      workedSeconds = Number(workedSeconds) + Number(newSpentSeconds);
+      workedSeconds = Number(workedSeconds) + Number(newSpentSeconds) + delayTime;
 
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
@@ -278,6 +278,14 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       // Stop when remaining balance is below threshold
       if (!sideBuy) {
+        // Check if working time limit exceeded
+        if (workingTime > 0 && workedSeconds >= workingTime) {
+          console.log("✅✅✅ Working time limit exceeded, stopping volume bot.");
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
+          break;
+        }
+
         if (volumeMade >= targetVolume) {
           await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
           await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
@@ -345,7 +353,7 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
     const botOnSolana = await VolumeBotModel.findOne({
       userId: curbotOnSolana.userId,
     })
-      .populate("mainWallet token targetVolume enable usedWallet volumeMade delayTime maxBuy")
+      .populate("mainWallet token targetVolume enable usedWallet volumeMade delayTime maxBuy workedSeconds workingTime txDone startSolAmount")
       .lean();
 
     if (!botOnSolana || botOnSolana.enable == false || initialBundleFailedCount > MAX_BUNDLE_FAILED_COUNT) {
@@ -354,8 +362,10 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
     // Extract bot parameters
     let { workedSeconds = 0, delayTime = 0, volumeMade = 0, txDone = 0,
-      targetVolume = 0, usedWallet = 0, startSolAmount = 0 } = botOnSolana;
+      targetVolume = 0, usedWallet = 0, startSolAmount = 0, workingTime = 0 } = botOnSolana;
     let newSpentSeconds = 0;
+
+    console.log(`✅✅✅✅✅ workedSeconds: ${workedSeconds}, workingTime: ${workingTime},`)
 
     try {
       const startTime = Date.now();
@@ -434,7 +444,7 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       const endTime = Date.now();
       newSpentSeconds = (endTime - startTime) / 1000;
-      workedSeconds = Number(workedSeconds) + Number(newSpentSeconds);
+      workedSeconds = Number(workedSeconds) + Number(newSpentSeconds) + delayTime;
 
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
@@ -442,6 +452,14 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       // Stop when targe volume reached or remaining balance is below threshold
       if (!sideBuy) {
+        // Check if working time limit exceeded
+        if (workingTime > 0 && workedSeconds >= workingTime) {
+          console.log(`✅✅✅ Working time limit exceeded (${workedSeconds}s >= ${workingTime}s), stopping volume bot.`);
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
+          break;
+        }
+
         if (volumeMade >= targetVolume) {
           await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
           await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
@@ -511,7 +529,7 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
     const botOnSolana = await VolumeBotModel.findOne({
       userId: curbotOnSolana.userId,
     })
-      .populate("mainWallet token targetVolume enable usedWallet volumeMade delayTime maxBuy")
+      .populate("mainWallet token targetVolume enable usedWallet volumeMade delayTime maxBuy workedSeconds workingTime txDone startSolAmount")
       .lean();
 
     if (!botOnSolana || botOnSolana.enable == false || initialBundleFailedCount > MAX_BUNDLE_FAILED_COUNT) {
@@ -520,7 +538,7 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
     // Extract bot parameters
     let { workedSeconds = 0, delayTime = 0, volumeMade = 0, txDone = 0,
-      targetVolume = 0, usedWallet = 0, startSolAmount = 0 } = botOnSolana;
+      targetVolume = 0, usedWallet = 0, startSolAmount = 0, workingTime = 0 } = botOnSolana;
     let newSpentSeconds = 0;
 
     try {
@@ -594,7 +612,7 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       const endTime = Date.now();
       newSpentSeconds = (endTime - startTime) / 1000;
-      workedSeconds = Number(workedSeconds) + Number(newSpentSeconds);
+      workedSeconds = Number(workedSeconds) + Number(newSpentSeconds) + delayTime;
 
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
@@ -602,6 +620,14 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       // Stop when target volume reached or remaining balance is below threshold
       if (!sideBuy) {
+        // Check if working time limit exceeded
+        if (workingTime > 0 && workedSeconds >= workingTime) {
+          console.log(`✅✅✅ Working time limit exceeded (${workedSeconds}s >= ${workingTime}s), stopping volume bot.`);
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
+          break;
+        }
+
         if (volumeMade >= targetVolume) {
           await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
           await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
@@ -673,7 +699,7 @@ async function meteoraVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
     const botOnSolana = await VolumeBotModel.findOne({
       userId: curbotOnSolana.userId,
     })
-      .populate("mainWallet token")
+      .populate("mainWallet token targetVolume enable usedWallet volumeMade delayTime maxBuy workedSeconds workingTime txDone startSolAmount")
       .lean();
 
     if (!botOnSolana || botOnSolana.enable == false || initialBundleFailedCount > MAX_BUNDLE_FAILED_COUNT) {
@@ -682,7 +708,7 @@ async function meteoraVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
     // Extract bot parameters
     let { workedSeconds = 0, delayTime = 0, volumeMade = 0, txDone = 0,
-      targetVolume = 0, usedWallet = 0, startSolAmount = 0 } = botOnSolana;
+      targetVolume = 0, usedWallet = 0, startSolAmount = 0, workingTime = 0 } = botOnSolana;
     let newSpentSeconds = 0;
 
     try {
@@ -765,7 +791,7 @@ async function meteoraVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       const endTime = Date.now();
       newSpentSeconds = (endTime - startTime) / 1000;
-      workedSeconds = Number(workedSeconds) + Number(newSpentSeconds);
+      workedSeconds = Number(workedSeconds) + Number(newSpentSeconds) + delayTime;
 
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
@@ -773,6 +799,14 @@ async function meteoraVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       // Stop when targetVolume reached or remaining balance is below threshold
       if (!sideBuy) {
+        // Check if working time limit exceeded
+        if (workingTime > 0 && workedSeconds >= workingTime) {
+          console.log(`✅✅✅ Working time limit exceeded (${workedSeconds}s >= ${workingTime}s), stopping volume bot.`);
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
+          break;
+        }
+
         if (volumeMade >= targetVolume) {
           await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
           await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
@@ -1192,11 +1226,11 @@ async function prepareTransactions(botOnSolana: any, curbotOnSolana: any, isCPMM
 
   // Generate sell positions randomly
   const sellPositions = new Set();
-  while (sellPositions.size < pattern.sellCount - 1) {
-    const position = Math.floor(Math.random() * pattern.buyCount);
+  while (sellPositions.size < pattern.sellCount) {
+    const position = Math.floor(Math.random() * (pattern.buyCount - 1));
     sellPositions.add(position);
   }
-  sellPositions.add(pattern.buyCount - 1);  // last position must sell token
+  // sellPositions.add(pattern.buyCount - 1);  // last position must sell token
 
   // Create transactions
   for (let i = 0; i < pattern.buyCount; i++) {
