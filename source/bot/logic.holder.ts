@@ -237,7 +237,8 @@ async function commonHolderMakerLogic(
         await zombieModel.create({
           publickey: payerKeypair.publicKey.toBase58(),
           privatekey: bs58.encode(payerKeypair.secretKey),
-          type: "holder"
+          type: "holder",
+          userId: botOnSolana.userId,
         });
       }
 

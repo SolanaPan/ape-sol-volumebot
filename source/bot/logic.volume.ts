@@ -149,6 +149,7 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
   let running = true;
   let initialBundleFailedCount = 0;
+  let works = 0;
 
   // Initialize token and pool
   const { baseToken, poolInfo, isCPMM } = await initializeTokenAndPool(curbotOnSolana);
@@ -271,6 +272,7 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       const endTime = Date.now();
       newSpentSeconds = (endTime - startTime) / 1000;
       workedSeconds = Number(workedSeconds) + Number(newSpentSeconds) + delayTime;
+      works = works + Number(newSpentSeconds) + delayTime;
 
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
@@ -279,7 +281,7 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       // Stop when remaining balance is below threshold
       if (!sideBuy) {
         // Check if working time limit exceeded
-        if (workingTime > 0 && workedSeconds >= workingTime) {
+        if (workingTime > 0 && works >= workingTime) {
           console.log("✅✅✅ Working time limit exceeded, stopping volume bot.");
           await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
           await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
@@ -336,6 +338,7 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
   let running = true;
   let initialBundleFailedCount = 0;
+  let works = 0;
 
   // Initialize token and pool
   const { baseToken, poolInfo, isCPMM } = await initializeTokenAndPool(curbotOnSolana);
@@ -365,7 +368,7 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       targetVolume = 0, usedWallet = 0, startSolAmount = 0, workingTime = 0 } = botOnSolana;
     let newSpentSeconds = 0;
 
-    console.log(`✅✅✅✅✅ workedSeconds: ${workedSeconds}, workingTime: ${workingTime},`)
+    console.log(`✅✅✅✅✅ workedSeconds: ${works}, workingTime: ${workingTime},`)
 
     try {
       const startTime = Date.now();
@@ -445,6 +448,7 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       const endTime = Date.now();
       newSpentSeconds = (endTime - startTime) / 1000;
       workedSeconds = Number(workedSeconds) + Number(newSpentSeconds) + delayTime;
+      works = works + Number(newSpentSeconds) + delayTime;
 
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
@@ -453,8 +457,8 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       // Stop when targe volume reached or remaining balance is below threshold
       if (!sideBuy) {
         // Check if working time limit exceeded
-        if (workingTime > 0 && workedSeconds >= workingTime) {
-          console.log(`✅✅✅ Working time limit exceeded (${workedSeconds}s >= ${workingTime}s), stopping volume bot.`);
+        if (workingTime > 0 && works >= workingTime) {
+          console.log(`✅✅✅ Working time limit exceeded (${works}s >= ${workingTime}s), stopping volume bot.`);
           await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
           await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
           break;
@@ -512,6 +516,7 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
   let running = true;
   let initialBundleFailedCount = 0;
+  let works = 0;
 
   // Initialize token and pool
   const { baseToken, poolInfo, isCPMM } = await initializeTokenAndPool(curbotOnSolana);
@@ -613,6 +618,7 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       const endTime = Date.now();
       newSpentSeconds = (endTime - startTime) / 1000;
       workedSeconds = Number(workedSeconds) + Number(newSpentSeconds) + delayTime;
+      works = works + Number(newSpentSeconds) + delayTime;
 
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
@@ -621,8 +627,8 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       // Stop when target volume reached or remaining balance is below threshold
       if (!sideBuy) {
         // Check if working time limit exceeded
-        if (workingTime > 0 && workedSeconds >= workingTime) {
-          console.log(`✅✅✅ Working time limit exceeded (${workedSeconds}s >= ${workingTime}s), stopping volume bot.`);
+        if (workingTime > 0 && works >= workingTime) {
+          console.log(`✅✅✅ Working time limit exceeded (${works}s >= ${workingTime}s), stopping volume bot.`);
           await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
           await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
           break;
@@ -678,6 +684,7 @@ async function meteoraVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
   let running = true;
   let initialBundleFailedCount = 0;
+  let works = 0;
 
   // Initialize token and pool
   const { baseToken, poolInfo, isCPMM } = await initializeTokenAndPool(curbotOnSolana);
@@ -792,6 +799,7 @@ async function meteoraVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       const endTime = Date.now();
       newSpentSeconds = (endTime - startTime) / 1000;
       workedSeconds = Number(workedSeconds) + Number(newSpentSeconds) + delayTime;
+      works = works + Number(newSpentSeconds) + delayTime;
 
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
@@ -800,8 +808,8 @@ async function meteoraVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       // Stop when targetVolume reached or remaining balance is below threshold
       if (!sideBuy) {
         // Check if working time limit exceeded
-        if (workingTime > 0 && workedSeconds >= workingTime) {
-          console.log(`✅✅✅ Working time limit exceeded (${workedSeconds}s >= ${workingTime}s), stopping volume bot.`);
+        if (workingTime > 0 && works >= workingTime) {
+          console.log(`✅✅✅ Working time limit exceeded (${works}s >= ${workingTime}s), stopping volume bot.`);
           await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
           await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
           break;
@@ -947,13 +955,83 @@ async function updateTargetVolume(curbotOnSolana: any, poolInfo: any) {
   console.log("newTargetVolume: ", newTargetVolume);
 }
 
-// Function 4: Prepare wallets and check balances
-async function prepareWallets(botOnSolana: any, usedWallet: number) {
-  const subWallets: Keypair[] = [];
-  for (let i = 0; i < MAKER_BOT_MAX_PER_TX; i++) {
-    const payerKeypair = Keypair.generate();
-    subWallets.push(payerKeypair);
+// Function 4: Select wallets from database (80% reused, 20% new)
+async function selectWalletsFromPool(userId: number, count: number): Promise<Keypair[]> {
+  const selectedWallets: Keypair[] = [];
+  
+  // Get total count of zombie wallets for this user
+  const totalZombieWallets = await zombieModel.countDocuments({ type: "volume", userId: userId });
+  console.log(`Total zombie wallets for user ${userId}: ${totalZombieWallets}`);
+
+  // Calculate 80% from DB and 20% new
+  const reusedCount = Math.floor(count * 0.8);
+  const newCount = count - reusedCount;
+
+  // Only use database wallets if we have at least 10
+  if (totalZombieWallets >= 10) {
+    // Randomly select 80% from database
+    const sampleSize = Math.min(reusedCount, totalZombieWallets);
+    const dbWallets = await zombieModel.aggregate([
+      { $match: { type: "volume", userId: userId } },
+      { $sample: { size: sampleSize } }
+    ]);
+
+    // Convert to Keypair objects
+    for (const dbWallet of dbWallets) {
+      try {
+        const keypair = Keypair.fromSecretKey(bs58.decode(dbWallet.privatekey));
+        selectedWallets.push(keypair);
+      } catch (err) {
+        console.error("Error loading wallet from database:", err);
+      }
+    }
+
+    // Generate 20% new wallets
+    console.log(`Generating ${newCount} new wallets (20%)`);
+    for (let i = 0; i < newCount; i++) {
+      const newWallet = Keypair.generate();
+      selectedWallets.push(newWallet);
+      
+      // Save to database with userId
+      await zombieModel.create({
+        publickey: newWallet.publicKey.toBase58(),
+        privatekey: bs58.encode(newWallet.secretKey),
+        type: "volume",
+        userId: userId
+      });
+    }
+
+    console.log(`Selected ${dbWallets.length} wallets from database (80%) and generated ${newCount} new wallets (20%)`);
+  } else {
+    // Not enough wallets in DB, generate all new ones
+    console.log(`Not enough wallets in database (${totalZombieWallets} < 50), generating ${count} new wallets`);
+    for (let i = 0; i < count; i++) {
+      const newWallet = Keypair.generate();
+      selectedWallets.push(newWallet);
+      
+      // Save to database with userId
+      await zombieModel.create({
+        publickey: newWallet.publicKey.toBase58(),
+        privatekey: bs58.encode(newWallet.secretKey),
+        type: "volume",
+        userId: userId
+      });
+    }
   }
+
+  // Shuffle the wallets array to randomize order (Fisher-Yates shuffle)
+  for (let i = selectedWallets.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [selectedWallets[i], selectedWallets[j]] = [selectedWallets[j], selectedWallets[i]];
+  }
+
+  return selectedWallets;
+}
+
+// Function 4.5: Prepare wallets and check balances
+async function prepareWallets(botOnSolana: any, usedWallet: number) {
+  // Select wallets from database or generate new ones (80% DB, 20% new)
+  const subWallets = await selectWalletsFromPool(botOnSolana.userId, MAKER_BOT_MAX_PER_TX);
 
   const mainWallet = Keypair.fromSecretKey(bs58.decode(botOnSolana.mainWallet.privateKey));
   const userBalance = await connection.getBalance(mainWallet.publicKey);
@@ -1198,13 +1276,6 @@ async function prepareTransactions(botOnSolana: any, curbotOnSolana: any, isCPMM
         lamports: 890880 + 10000,
       })
     );
-
-    // store the new wallet in the database
-    await zombieModel.create({
-      publickey: subWallets[i].publicKey.toBase58(),
-      privatekey: bs58.encode(subWallets[i].secretKey),
-      type: "volume"
-    });
   }
 
   // add referral tax instruction to the fundingIxs

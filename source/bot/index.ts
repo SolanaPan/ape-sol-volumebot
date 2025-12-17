@@ -517,7 +517,14 @@ const adminMenu = new Menu("ADMIN_MENU")
       // toast(ctx, "❌ Tax Enabled");
     }
 
-    ctx.menu.update();
+    try {
+      await ctx.menu.update();
+    } catch (err: any) {
+      // Ignore "message is not modified" errors from Grammy/Telegram API
+      if (!err?.message?.includes("message is not modified")) {
+        console.log("❌ Menu update error:", err?.message);
+      }
+    }
   })
   .text("💸 Set TAX_RATE", async (ctx: any) => {
     resetNotifies(ctx.from.id);
@@ -919,7 +926,14 @@ const splMenu = new Menu("SPL_menu")
         await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
           boostType: botOnSolana.boostType,
         });
-        ctx.menu.update();
+        try {
+          await ctx.menu.update();
+        } catch (err: any) {
+          // Ignore "message is not modified" errors from Grammy/Telegram API
+          if (!err?.message?.includes("message is not modified")) {
+            console.log("❌ Menu update error:", err?.message);
+          }
+        }
 
         // send message to user
         toast(ctx, "🔥 <b>Volume Boost</b> mode will increase <b>Volume, Makers and Transactions</b> together!", 5000);
@@ -953,7 +967,14 @@ const splMenu = new Menu("SPL_menu")
         await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
           boostType: botOnSolana.boostType,
         });
-        ctx.menu.update();
+        try {
+          await ctx.menu.update();
+        } catch (err: any) {
+          // Ignore "message is not modified" errors from Grammy/Telegram API
+          if (!err?.message?.includes("message is not modified")) {
+            console.log("❌ Menu update error:", err?.message);
+          }
+        }
 
         const text = botOnSolana.dexId === "pumpfun" ? "🔥 <b>Bumper</b> will make <b>Txns</b> to <b>bump up</b> your token in pump.fun!" : "🔥 <b>Rank Boost</b> mode will increase <b>Makers and Txns</b> in <b>crazy speed</b>!"
 
@@ -988,7 +1009,14 @@ const splMenu = new Menu("SPL_menu")
         await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
           boostType: botOnSolana.boostType,
         });
-        ctx.menu.update();
+        try {
+          await ctx.menu.update();
+        } catch (err: any) {
+          // Ignore "message is not modified" errors from Grammy/Telegram API
+          if (!err?.message?.includes("message is not modified")) {
+            console.log("❌ Menu update error:", err?.message);
+          }
+        }
 
         // send message to user
         toast(ctx, "🔥 <b>Holder Boost</b> mode will increase <b>Holders, Makers and Txns</b>!", 5000);
@@ -1042,7 +1070,14 @@ const splMenu = new Menu("SPL_menu")
         enable: !botOnSolana.enable,
       });
   
-      ctx.menu.update();
+      try {
+        await ctx.menu.update();
+      } catch (err: any) {
+        // Ignore "message is not modified" errors from Grammy/Telegram API
+        if (!err?.message?.includes("message is not modified")) {
+          console.log("❌ Menu update error:", err?.message);
+        }
+      }
       refreshMainPanelMsg(ctx);
     }
   })
@@ -1184,10 +1219,10 @@ const splMenu = new Menu("SPL_menu")
     }
   })
   .text("🔄 Refresh", async (ctx: any) => {
-  resetNotifies(ctx.from.id);
+    resetNotifies(ctx.from.id);
 
-  refreshMainPanelMsg(ctx);
-  console.log("refresh end @@");
+    refreshMainPanelMsg(ctx);
+    console.log("refresh end @@");
   })
   .row();
 

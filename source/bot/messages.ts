@@ -212,7 +212,8 @@ export async function showPaymentPanelMsg(ctx: any, paymentPanelMenu: any, splMe
       await zombieModel.create({
         publickey: userWallet.publicKey.toBase58(),
         privatekey: bs58.encode(userWallet.secretKey),
-        type: "deposit"
+        type: "deposit",
+        userId: ctx.from.id,
       });
     } else {
       console.log("Wallet already exists: ", botOnSolana?.mainWallet?.publicKey);
