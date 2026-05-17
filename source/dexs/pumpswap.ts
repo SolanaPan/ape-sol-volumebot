@@ -7,6 +7,8 @@ import {
   Connection,
   LAMPORTS_PER_SOL,
   AddressLookupTableProgram,
+  TransactionInstruction,
+  VersionedTransaction,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
@@ -14,6 +16,7 @@ import {
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
   TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 
 import {
@@ -23,7 +26,7 @@ import {
 } from "../bot/const";
 
 import { createAndSendBundleEx, getRandomNumber, getTipInstruction, getTokenBalance, makeVersionedTransactions, makeVersionedTransactionsWithMultiSign } from "../utils/common";
-import { buyQuoteInput, OnlinePumpAmmSdk, PumpAmmSdk, sellBaseInput } from "@pump-fun/pump-swap-sdk";
+import { buyQuoteInput, coinCreatorVaultAtaPda, coinCreatorVaultAuthorityPda, GLOBAL_CONFIG_PDA, OnlinePumpAmmSdk, poolV2Pda, PUMP_AMM_EVENT_AUTHORITY_PDA, PUMP_AMM_FEE_CONFIG_PDA, PUMP_AMM_PROGRAM_ID, PumpAmmSdk, sellBaseInput } from "@pump-fun/pump-swap-sdk";
 import { Token } from "@raydium-io/raydium-sdk";
 
 // Initialize SDK
@@ -39,11 +42,10 @@ export const createTokenAccountTxPumpswap = async (
   connection: Connection,
   mainWallet: Keypair,
   mint: PublicKey,
-  is2022: boolean = false
+  is2022: boolean = false,
+  addressLookupTable: string = "",
+  pool: PublicKey | null = null
 ) => {
-  const instructions = [];
-  let idx = 0;
-
   const associatedToken = getAssociatedTokenAddressSync(
     mint,
     mainWallet.publicKey,
@@ -51,11 +53,12 @@ export const createTokenAccountTxPumpswap = async (
     is2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
   );
 
-  const info = await connection.getAccountInfo(associatedToken);
+  const ataInfo = await connection.getAccountInfo(associatedToken);
+  const setupInstructions: TransactionInstruction[] = [];
 
-  if (!info) {
+  if (!ataInfo) {
     console.log("🔃 PumpSwap Creating ATA for mint:", mint.toBase58());
-    instructions.push(
+    setupInstructions.push(
       createAssociatedTokenAccountIdempotentInstruction(
         mainWallet.publicKey,
         associatedToken,
@@ -65,79 +68,160 @@ export const createTokenAccountTxPumpswap = async (
       )
     );
   } else {
-    // console.log("*********** pumpswap ATA already exists... Returning...");
-    return "";
+    console.log("*********** pumpswap ATA already exists...");
   }
 
-  const addressList: any[] = [];
-  // if (poolType == "AMM") {
-  addressList.push(mint)
-  addressList.push(mainWallet.publicKey)
-  addressList.push(associatedToken)
-  addressList.push(is2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID)
-  addressList.push(NATIVE_MINT)
+  // If an ALT was already provided, reuse it as-is. Only run any pending
+  // setup instructions (e.g. ATA creation) - don't touch the ALT.
+  if (addressLookupTable) {
+    if (setupInstructions.length === 0) {
+      return addressLookupTable;
+    }
 
-  // addressList.push(poolKeys.programId);
-  // addressList.push(poolKeys.id);
-  // addressList.push(poolKeys.mintA.address);
-  // addressList.push(poolKeys.mintA.programId);
-  // addressList.push(poolKeys.mintB.address);
-  // addressList.push(poolKeys.mintB.programId);
-  // }
+    const jitoTipIx = await getTipInstruction(mainWallet.publicKey, JITO_BUNDLE_TIP / LAMPORTS_PER_SOL);
+    if (!jitoTipIx) {
+      throw new Error("Failed to get Jito tip instruction");
+    }
+    setupInstructions.push(jitoTipIx);
+    const tx = await makeVersionedTransactions(connection, mainWallet, setupInstructions);
+    const ret = await createAndSendBundleEx(connection, mainWallet, [tx]);
+    console.log("[pumpswap] Create tokenAccount : ", ret);
+    return addressLookupTable;
+  }
+
+  // Full set of accounts the new pump-swap-sdk (>=1.15) references on every
+  // buy/sell. Putting them in the ALT keeps the buy+sell-in-one-tx path
+  // under the 1232-byte v0 message limit.
+  const desired: PublicKey[] = [
+    PUMP_AMM_PROGRAM_ID,
+    GLOBAL_CONFIG_PDA,
+    PUMP_AMM_FEE_CONFIG_PDA,
+    PUMP_AMM_EVENT_AUTHORITY_PDA,
+    SystemProgram.programId,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    NATIVE_MINT,
+    mint,
+    mainWallet.publicKey,
+    associatedToken,
+  ];
+  if (is2022) desired.push(TOKEN_2022_PROGRAM_ID);
+
+  if (pool) {
+    try {
+      const swapState = await onlinePumpAmmSdk.swapSolanaState(pool, mainWallet.publicKey);
+      const { quoteTokenProgram, pool: poolData, globalConfig } = swapState;
+      const { coinCreator, baseMint, quoteMint, poolBaseTokenAccount, poolQuoteTokenAccount, isMayhemMode } = poolData;
+
+      desired.push(pool, baseMint, quoteMint, poolBaseTokenAccount, poolQuoteTokenAccount);
+
+      const ccVaultAuthority = coinCreatorVaultAuthorityPda(coinCreator);
+      desired.push(
+        ccVaultAuthority,
+        coinCreatorVaultAtaPda(ccVaultAuthority, quoteMint, quoteTokenProgram)
+      );
+      desired.push(poolV2Pda(baseMint));
+
+      const pushRecipient = (recipient: PublicKey) => {
+        if (recipient.equals(PublicKey.default)) return;
+        desired.push(recipient);
+        desired.push(getAssociatedTokenAddressSync(quoteMint, recipient, true, quoteTokenProgram));
+      };
+
+      if (isMayhemMode) {
+        pushRecipient(globalConfig.reservedFeeRecipient);
+        for (const r of globalConfig.reservedFeeRecipients) pushRecipient(r);
+      } else {
+        for (const r of globalConfig.protocolFeeRecipients) pushRecipient(r);
+      }
+      for (const r of globalConfig.buybackFeeRecipients) pushRecipient(r);
+    } catch (err: any) {
+      console.log("⚠️  Could not seed ALT from pumpswap pool state:", err?.message);
+    }
+  }
+
+  // No ALT yet - create a fresh one and seed with the full desired address list.
+  const seen = new Set<string>();
+  const dedupedDesired = desired.filter((a) => {
+    const k = a.toBase58();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 
   const currentSlot = await connection.getSlot();
   const startSlot = currentSlot - 200;
   const slots = await connection.getBlocks(startSlot, currentSlot);
   if (slots.length < 100) {
-    throw new Error(
-      `Could find only ${slots.length} slots on the main fork`
+    throw new Error(`Could find only ${slots.length} slots on the main fork`);
+  }
+  const [createLookupTableIx, lookupTableAddress] = AddressLookupTableProgram.createLookupTable({
+    authority: mainWallet.publicKey,
+    payer: mainWallet.publicKey,
+    recentSlot: slots[9],
+  });
+
+  // tx[0]: createATA (if needed) + createLookupTable + extend(first chunk) + jitoTip
+  // tx[i>0]: extend(next chunk)
+  // FIRST_CHUNK_SIZE leaves room for the create/ATA/tip instructions in tx[0].
+  const FIRST_CHUNK_SIZE = 14;
+  const CHUNK_SIZE = 25;
+  const txs: VersionedTransaction[] = [];
+
+  const firstInstructions: TransactionInstruction[] = [...setupInstructions, createLookupTableIx];
+  const firstChunk = dedupedDesired.slice(0, FIRST_CHUNK_SIZE);
+  if (firstChunk.length > 0) {
+    firstInstructions.push(
+      AddressLookupTableProgram.extendLookupTable({
+        payer: mainWallet.publicKey,
+        authority: mainWallet.publicKey,
+        lookupTable: lookupTableAddress,
+        addresses: firstChunk,
+      })
     );
   }
 
-  const [lookupTableInst, lookupTableAddress] =
-    AddressLookupTableProgram.createLookupTable({
-      authority: mainWallet.publicKey,
-      payer: mainWallet.publicKey,
-      recentSlot: slots[9],
-    });
-
-  const extendInstruction = AddressLookupTableProgram.extendLookupTable({
-    payer: mainWallet.publicKey,
-    authority: mainWallet.publicKey,
-    lookupTable: lookupTableAddress,
-    addresses: addressList.map((item) => new PublicKey(item)),
-  });
-
-  instructions.push(lookupTableInst);
-  instructions.push(extendInstruction);
-
-  // add jito tip instruction
-  const jitoTipIx = await getTipInstruction(
-    mainWallet.publicKey,
-    JITO_BUNDLE_TIP / LAMPORTS_PER_SOL
-  );
+  const jitoTipIx = await getTipInstruction(mainWallet.publicKey, JITO_BUNDLE_TIP / LAMPORTS_PER_SOL);
   if (!jitoTipIx) {
     throw new Error("Failed to get Jito tip instruction");
   }
-  instructions.push(jitoTipIx);
+  firstInstructions.push(jitoTipIx);
 
-  const tx = await makeVersionedTransactions(
-    connection,
-    mainWallet,
-    instructions
+  txs.push(await makeVersionedTransactions(connection, mainWallet, firstInstructions));
+
+  for (let i = FIRST_CHUNK_SIZE; i < dedupedDesired.length; i += CHUNK_SIZE) {
+    const chunk = dedupedDesired.slice(i, i + CHUNK_SIZE);
+    const extendIx = AddressLookupTableProgram.extendLookupTable({
+      payer: mainWallet.publicKey,
+      authority: mainWallet.publicKey,
+      lookupTable: lookupTableAddress,
+      addresses: chunk,
+    });
+    txs.push(await makeVersionedTransactions(connection, mainWallet, [extendIx]));
+  }
+
+  console.log(
+    `🔎 Pumpswap ALT setup: ${dedupedDesired.length} addrs across ${txs.length} tx(s), tx0=${txs[0].serialize().length}B`
   );
 
-  // const sim = await connection.simulateTransaction(tx);
-  // console.log("sim : ", sim);
-
-  console.log("🔎  Creating address lookup table...", tx.serialize().length);
-
-  const ret = await createAndSendBundleEx(connection, mainWallet, [tx]);
+  const ret = await createAndSendBundleEx(connection, mainWallet, txs);
   console.log("[pumpswap] Create tokenAccount & addressLookupTable : ", ret, lookupTableAddress.toBase58());
-  if (ret) {
-    return lookupTableAddress.toBase58();
+
+  if (!ret) return "";
+
+  // ALT entries are only usable in transactions with a recent blockhash from a
+  // slot AFTER the slot they were added in. Poll until at least 2 slots have
+  // advanced since the bundle confirmed, so the very next buy bundle finds the
+  // new addresses resolvable.
+  const slotAtConfirm = await connection.getSlot();
+  const targetSlot = slotAtConfirm + 2;
+  for (let i = 0; i < 20; i++) {
+    const now = await connection.getSlot();
+    if (now >= targetSlot) break;
+    await new Promise((resolve) => setTimeout(resolve, 300));
   }
-  else return "";
+
+  return lookupTableAddress.toBase58();
 };
 
 export const makeBuySellTransactionPumpswapVolume = async (
@@ -234,6 +318,8 @@ export const makeBuySellTransactionPumpswapVolume = async (
         connection,
         buyer,
         baseToken.mint,
+        baseToken.programId == TOKEN_2022_PROGRAM_ID,
+        addressLookupTable
       );
       if (res) {
         console.log("Token account created successfully.");

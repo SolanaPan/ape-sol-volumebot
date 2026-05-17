@@ -29,10 +29,13 @@ export const createTokenAccountTxMeteora = async (
   connection: Connection,
   mainWallet: Keypair,
   mint: PublicKey,
-  is2022: boolean = false
+  is2022: boolean = false,
+  addressLookupTable: string = ""
 ) => {
   const instructions = [];
   let idx = 0;
+  const shouldCreateLookupTable = !addressLookupTable;
+  let lookupTableAddress: PublicKey | null = null;
 
   const associatedToken = getAssociatedTokenAddressSync(
     mint,
@@ -55,42 +58,48 @@ export const createTokenAccountTxMeteora = async (
       )
     );
   } else {
-    // console.log("*********** ATA already exists... Returning ...", idx);
-    return "";
+    // console.log("*********** ATA already exists...", idx);
   }
 
   // console.log("*********** creating meteora ATA...", idx);
   // const [userToken, ataTokenIx] = await getOrCreateATAInstruction(new PublicKey(mint), mainWallet.publicKey, connection);
   // userToken && ataTokenIx && instructions.push(ataTokenIx);
 
-  const addressList: any[] = [];
-  addressList.push(mint)
+  if (shouldCreateLookupTable) {
+    const addressList: PublicKey[] = [mint];
 
-  const currentSlot = await connection.getSlot();
-  const startSlot = currentSlot - 200;
-  const slots = await connection.getBlocks(startSlot, currentSlot);
-  if (slots.length < 100) {
-    throw new Error(
-      `Could find only ${slots.length} slots on the main fork`
-    );
-  }
+    const currentSlot = await connection.getSlot();
+    const startSlot = currentSlot - 200;
+    const slots = await connection.getBlocks(startSlot, currentSlot);
+    if (slots.length < 100) {
+      throw new Error(
+        `Could find only ${slots.length} slots on the main fork`
+      );
+    }
 
-  const [lookupTableInst, lookupTableAddress] =
-    AddressLookupTableProgram.createLookupTable({
-      authority: mainWallet.publicKey,
+    const [lookupTableInst, createdLookupTableAddress] =
+      AddressLookupTableProgram.createLookupTable({
+        authority: mainWallet.publicKey,
+        payer: mainWallet.publicKey,
+        recentSlot: slots[9],
+      });
+
+    lookupTableAddress = createdLookupTableAddress;
+
+    const extendInstruction = AddressLookupTableProgram.extendLookupTable({
       payer: mainWallet.publicKey,
-      recentSlot: slots[9],
+      authority: mainWallet.publicKey,
+      lookupTable: lookupTableAddress,
+      addresses: addressList,
     });
 
-  const extendInstruction = AddressLookupTableProgram.extendLookupTable({
-    payer: mainWallet.publicKey,
-    authority: mainWallet.publicKey,
-    lookupTable: lookupTableAddress,
-    addresses: addressList.map((item) => new PublicKey(item)),
-  });
+    instructions.push(lookupTableInst);
+    instructions.push(extendInstruction);
+  }
 
-  // instructions.push(lookupTableInst);
-  // instructions.push(extendInstruction);
+  if (instructions.length === 0) {
+    return "";
+  }
 
   // add jito tip instruction
   const jitoTipIx = await getTipInstruction(
@@ -112,11 +121,17 @@ export const createTokenAccountTxMeteora = async (
   // console.log("sim : ", sim);
 
   const ret = await createAndSendBundleEx(connection, mainWallet, [tx]);
-  console.log("[meteora] Create tokenAccount & addressLookupTable : ", ret, lookupTableAddress.toBase58());
-  if (ret) {
+  if (lookupTableAddress) {
+    console.log("[meteora] Create tokenAccount & addressLookupTable : ", ret, lookupTableAddress.toBase58());
+  } else {
+    console.log("[meteora] Create tokenAccount : ", ret);
+  }
+
+  if (ret && lookupTableAddress) {
     return lookupTableAddress;
   }
-  else return "";
+
+  return "";
 };
 
 export const makeBuySellTransactionMeteoraVolume = async (
@@ -213,7 +228,8 @@ export const makeBuySellTransactionMeteoraVolume = async (
         connection,
         buyer,
         baseTokenMint,
-        // baseToken.programId == TOKEN_2022_PROGRAM_ID
+        false,
+        addressLookupTable
       );
       if (res) {
         console.log("Token account created successfully.");

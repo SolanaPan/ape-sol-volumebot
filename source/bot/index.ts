@@ -1679,7 +1679,7 @@ bot.on("message", async (ctx: any) => {
     // update max buy amount
     try {
       // validate input
-      if (Number.isNaN(Number(inputText)) || Number(inputText) < 0.01 || Number(inputText) > 4) {
+      if (Number.isNaN(Number(inputText)) || Number(inputText) > 4) {
         toast(ctx, "❌ Invalid max buy amount. Please enter a valid number.");
         return;
       }
@@ -1919,6 +1919,12 @@ bot.on("callback_query", async (ctx: any) => {
 // False positive as bot is not a promise
 // eslint-disable-next-line unicorn/prefer-top-level-await
 bot.catch((error: any) => {
+  // Telegram returns 400 "message is not modified" when a menu navigation
+  // lands on the same state the user is already viewing. It's harmless.
+  const description = error?.error?.description ?? error?.description;
+  if (description?.includes("message is not modified")) {
+    return;
+  }
   console.error("ERROR on handling update occured", error);
 });
 

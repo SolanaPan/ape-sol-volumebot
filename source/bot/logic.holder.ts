@@ -45,6 +45,7 @@ import {
   MIN_REMAIN_SOL,
   ONE_K_VOL_PRICE,
   holderBots,
+  isUSD1Quote,
 } from "./const";
 import { SystemProgram } from "@solana/web3.js";
 import { sleep } from "../utils/common";
@@ -542,6 +543,8 @@ async function raydiumSetup(curbotOnSolana: any, baseToken: Token) {
     return { success: false };
   }
 
+  const usesUSD1 = isUSD1Quote(curbotOnSolana);
+  
   return {
     success: true,
     additionalParams: {
@@ -556,7 +559,9 @@ async function raydiumSetup(curbotOnSolana: any, baseToken: Token) {
         baseToken.mint,
         poolInfo,
         raydiumSDKList.get(mainWallet.publicKey.toString()),
-        curbotOnSolana.token?.is2022
+        curbotOnSolana.token?.is2022,
+        usesUSD1,
+        curbotOnSolana.addressLookupTable || ""
       );
     }
   };
@@ -577,7 +582,10 @@ async function pumpswapSetup(curbotOnSolana: any, baseToken: Token) {
       return createTokenAccountTxPumpswap(
         connection,
         mainWallet,
-        baseToken.mint
+        baseToken.mint,
+        curbotOnSolana.token?.is2022 || false,
+        curbotOnSolana.addressLookupTable || "",
+        new PublicKey(curbotOnSolana.pairAddress)
       );
     }
   };
@@ -599,7 +607,8 @@ async function pumpfunSetup(curbotOnSolana: any, baseToken: Token) {
         connection,
         mainWallet,
         baseToken.mint,
-        baseToken.programId.equals(TOKEN_2022_PROGRAM_ID)
+        baseToken.programId.equals(TOKEN_2022_PROGRAM_ID),
+        curbotOnSolana.addressLookupTable || ""
       );
     }
   };
@@ -628,7 +637,9 @@ async function meteoraSetup(curbotOnSolana: any, baseToken: Token) {
       return createTokenAccountTxMeteora(
         connection,
         mainWallet,
-        baseToken.mint
+        baseToken.mint,
+        false,
+        curbotOnSolana.addressLookupTable || ""
       );
     }
   };

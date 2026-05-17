@@ -8,6 +8,7 @@ import {
   LAMPORTS_PER_SOL,
   AddressLookupTableProgram,
   TransactionInstruction,
+  VersionedTransaction,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
@@ -16,6 +17,8 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   TOKEN_2022_PROGRAM_ID,
   getAccount,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  NATIVE_MINT,
 } from "@solana/spl-token";
 
 import {
@@ -23,6 +26,14 @@ import {
   PumpSdk,
   bondingCurvePda,
   OnlinePumpSdk,
+  creatorVaultPda,
+  bondingCurveV2Pda,
+  GLOBAL_VOLUME_ACCUMULATOR_PDA,
+  PUMP_EVENT_AUTHORITY_PDA,
+  PUMP_FEE_CONFIG_PDA,
+  GLOBAL_PDA,
+  PUMP_FEE_PROGRAM_ID,
+  PUMP_PROGRAM_ID,
 } from "@pump-fun/pump-sdk"; // Import the PumpSdk
 import {
   createAndSendBundleEx,
@@ -38,9 +49,11 @@ import {
   JITO_BUNDLE_TIP,
   MAKER_BOT_MAX_PER_TX,
 } from "../bot/const";
+import { OnlinePumpAmmSdk } from "@pump-fun/pump-swap-sdk";
 
 // Instantiate SDK
 const onlinePumpSdk = new OnlinePumpSdk(connection);
+const onlinePumpAmmSdk = new OnlinePumpAmmSdk(connection);
 const pumpSdk = new PumpSdk();
 const mintSupply = new BN(1000000000000000);
 let PUMP_GLOBAL: any;
@@ -58,36 +71,121 @@ export const createTokenAccountTxPumpFun = async (
   connection: Connection,
   mainWallet: Keypair,
   mint: PublicKey,
-  is2022: boolean = false
+  is2022: boolean = false,
+  addressLookupTable: string = ""
 ) => {
-  const instructions = [];
+  const tokenProgram = is2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
 
   const associatedToken = getAssociatedTokenAddressSync(
     mint,
     mainWallet.publicKey,
     false,
-    is2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
+    tokenProgram
   );
 
-  const info = await connection.getAccountInfo(associatedToken);
+  const ataInfo = await connection.getAccountInfo(associatedToken);
+  const setupInstructions: TransactionInstruction[] = [];
 
-  if (!info) {
+  if (!ataInfo) {
     console.log("🔃 Pumpfun Creating ATA for mint:", mint.toBase58());
-    instructions.push(
+    setupInstructions.push(
       createAssociatedTokenAccountIdempotentInstruction(
         mainWallet.publicKey,
         associatedToken,
         mainWallet.publicKey,
         mint,
-        is2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
+        tokenProgram
       )
     );
   } else {
     console.log("✅ Pumpfun ATA already exists for mint:", mint.toBase58());
-    return "";
   }
 
-  const addressList: any[] = [mint];
+  // If an ALT was already provided, reuse it as-is. Only run any pending
+  // setup instructions (e.g. ATA creation) - don't touch the ALT.
+  if (addressLookupTable) {
+    if (setupInstructions.length === 0) {
+      return addressLookupTable;
+    }
+
+    const jitoTipIx = await getTipInstruction(mainWallet.publicKey, JITO_BUNDLE_TIP / LAMPORTS_PER_SOL);
+    if (!jitoTipIx) {
+      throw new Error("Failed to get Jito tip instruction");
+    }
+    setupInstructions.push(jitoTipIx);
+    const tx = await makeVersionedTransactions(connection, mainWallet, setupInstructions);
+    const ret = await createAndSendBundleEx(connection, mainWallet, [tx]);
+    console.log("[pumpfun] Create tokenAccount : ", ret);
+    return addressLookupTable;
+  }
+
+  // Full set of accounts the new pump-sdk (>=1.33) references on every
+  // buy/sell. Putting them in the ALT keeps the per-tx message size down.
+  const desired: PublicKey[] = [
+    PUMP_PROGRAM_ID,
+    PUMP_FEE_PROGRAM_ID,
+    GLOBAL_PDA,
+    PUMP_FEE_CONFIG_PDA,
+    PUMP_EVENT_AUTHORITY_PDA,
+    GLOBAL_VOLUME_ACCUMULATOR_PDA,
+    SystemProgram.programId,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    NATIVE_MINT,
+    mint,
+    mainWallet.publicKey,
+    associatedToken,
+  ];
+  if (is2022) desired.push(TOKEN_2022_PROGRAM_ID);
+
+  // Per-mint pumpfun PDAs.
+  try {
+    const bondingCurve = bondingCurvePda(mint);
+    const associatedBondingCurve = getAssociatedTokenAddressSync(mint, bondingCurve, true, tokenProgram);
+    desired.push(bondingCurve, bondingCurveV2Pda(mint), associatedBondingCurve);
+
+    const bcAccountInfo = await connection.getAccountInfo(bondingCurve);
+    const bcState = bcAccountInfo ? pumpSdk.decodeBondingCurveNullable(bcAccountInfo) : null;
+    if (bcState) desired.push(creatorVaultPda(bcState.creator));
+  } catch (err: any) {
+    console.log("⚠️  Could not seed ALT from pumpfun bonding curve:", err?.message);
+  }
+
+  // Fee recipients (SDK picks a random one per call). Protocol recipients come
+  // from the on-chain pumpfun Global; buyback recipients come from the pumpswap
+  // globalConfig (the values match the SDK's own static list).
+  const pushPubkey = (k: PublicKey | undefined) => {
+    if (!k) return;
+    if (k.equals(PublicKey.default)) return;
+    desired.push(k);
+  };
+  try {
+    const global = PUMP_GLOBAL ?? (await onlinePumpSdk.fetchGlobal());
+    if (global.mayhemModeEnabled) {
+      pushPubkey(global.reservedFeeRecipient);
+      for (const r of global.reservedFeeRecipients ?? []) pushPubkey(r);
+    } else {
+      pushPubkey(global.feeRecipient);
+      for (const r of global.feeRecipients ?? []) pushPubkey(r);
+    }
+  } catch (err: any) {
+    console.log("⚠️  Could not seed pumpfun protocol fee recipients:", err?.message);
+  }
+  try {
+    const ammGlobalConfig = await onlinePumpAmmSdk.fetchGlobalConfigAccount();
+    for (const r of ammGlobalConfig.buybackFeeRecipients ?? []) pushPubkey(r);
+  } catch (err: any) {
+    console.log("⚠️  Could not seed pumpfun buyback fee recipients:", err?.message);
+  }
+
+  // dedupe
+  const seen = new Set<string>();
+  const dedupedDesired = desired.filter((a) => {
+    const k = a.toBase58();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 
   const currentSlot = await connection.getSlot();
   const startSlot = currentSlot - 200;
@@ -95,49 +193,75 @@ export const createTokenAccountTxPumpFun = async (
   if (slots.length < 100) {
     throw new Error(`Could find only ${slots.length} slots on the main fork`);
   }
-
-  const [lookupTableInst, lookupTableAddress] =
-    AddressLookupTableProgram.createLookupTable({
-      authority: mainWallet.publicKey,
-      payer: mainWallet.publicKey,
-      recentSlot: slots[9],
-    });
-
-  const extendInstruction = AddressLookupTableProgram.extendLookupTable({
-    payer: mainWallet.publicKey,
+  const [createLookupTableIx, lookupTableAddress] = AddressLookupTableProgram.createLookupTable({
     authority: mainWallet.publicKey,
-    lookupTable: lookupTableAddress,
-    addresses: addressList.map((item) => new PublicKey(item)),
+    payer: mainWallet.publicKey,
+    recentSlot: slots[9],
   });
 
-  // instructions.push(lookupTableInst);
-  // instructions.push(extendInstruction);
+  // tx[0]: createATA (if needed) + createLookupTable + extend(first chunk) + jitoTip
+  // tx[i>0]: extend(next chunk)
+  const FIRST_CHUNK_SIZE = 14;
+  const CHUNK_SIZE = 25;
+  const txs: VersionedTransaction[] = [];
 
-  // add jito tip instruction
-  const jitoTipIx = await getTipInstruction(
-    mainWallet.publicKey,
-    JITO_BUNDLE_TIP / LAMPORTS_PER_SOL
-  );
+  const firstInstructions: TransactionInstruction[] = [...setupInstructions, createLookupTableIx];
+  const firstChunk = dedupedDesired.slice(0, FIRST_CHUNK_SIZE);
+  if (firstChunk.length > 0) {
+    firstInstructions.push(
+      AddressLookupTableProgram.extendLookupTable({
+        payer: mainWallet.publicKey,
+        authority: mainWallet.publicKey,
+        lookupTable: lookupTableAddress,
+        addresses: firstChunk,
+      })
+    );
+  }
+
+  const jitoTipIx = await getTipInstruction(mainWallet.publicKey, JITO_BUNDLE_TIP / LAMPORTS_PER_SOL);
   if (!jitoTipIx) {
     throw new Error("Failed to get Jito tip instruction");
   }
-  instructions.push(jitoTipIx);
+  firstInstructions.push(jitoTipIx);
 
-  const tx = await makeVersionedTransactions(
-    connection,
-    mainWallet,
-    instructions
+  txs.push(await makeVersionedTransactions(connection, mainWallet, firstInstructions));
+
+  for (let i = FIRST_CHUNK_SIZE; i < dedupedDesired.length; i += CHUNK_SIZE) {
+    const chunk = dedupedDesired.slice(i, i + CHUNK_SIZE);
+    const extendIx = AddressLookupTableProgram.extendLookupTable({
+      payer: mainWallet.publicKey,
+      authority: mainWallet.publicKey,
+      lookupTable: lookupTableAddress,
+      addresses: chunk,
+    });
+    txs.push(await makeVersionedTransactions(connection, mainWallet, [extendIx]));
+  }
+
+  console.log(
+    `🔎 Pumpfun ALT setup: ${dedupedDesired.length} addrs across ${txs.length} tx(s), tx0=${txs[0].serialize().length}B`
   );
 
-  const ret = await createAndSendBundleEx(connection, mainWallet, [tx]);
+  const ret = await createAndSendBundleEx(connection, mainWallet, txs);
   console.log(
     "[pumpfun] Create tokenAccount & addressLookupTable : ",
     ret,
     lookupTableAddress.toBase58()
   );
-  if (ret) {
-    return lookupTableAddress;
-  } else return "";
+
+  if (!ret) return "";
+
+  // ALT entries are only usable in transactions with a recent blockhash from a
+  // slot AFTER the slot they were added in. Poll until at least 2 slots have
+  // advanced since the bundle confirmed.
+  const slotAtConfirm = await connection.getSlot();
+  const targetSlot = slotAtConfirm + 2;
+  for (let i = 0; i < 20; i++) {
+    const now = await connection.getSlot();
+    if (now >= targetSlot) break;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+
+  return lookupTableAddress.toBase58();
 };
 
 /**
@@ -381,7 +505,8 @@ export const makeBuySellTransactionPumpFunVolume = async (
         connection,
         buyer,
         mint,
-        is2022
+        is2022,
+        addressLookupTable
       );
       if (res) {
         console.log("✅ Token account created successfully.");

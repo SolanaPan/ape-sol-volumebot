@@ -368,7 +368,8 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
           poolInfo,
           raydiumSDKList.get(mainWallet.publicKey.toString()),
           curbotOnSolana.token?.is2022,
-          usesUSD1
+          usesUSD1,
+          botOnSolana.addressLookupTable || ""
         );
 
         if (lookupTableAddress) {
@@ -384,6 +385,31 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       if (botOnSolana.dexId == "raydium" && (botOnSolana.addressLookupTable == "" || botOnSolana.addressLookupTable == null || botOnSolana.addressLookupTable == undefined)) {
         console.log("[Volume] Address lookup table not found. Break!");
         break;
+      }
+
+      // Stop when remaining balance is below threshold
+      if (!sideBuy) {
+        // Check if working time limit exceeded
+        if (workingTime > 0 && works >= workingTime) {
+          console.log("✅✅✅ Working time limit exceeded, stopping volume bot.");
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
+          break;
+        }
+
+        if (volumeMade >= targetVolume) {
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
+          break;
+        }
+
+        const currentLamports = userBalance;
+        if (currentLamports <= MIN_REMAIN_SOL * LAMPORTS_PER_SOL) {
+          console.log("Remaining balance below threshold, stopping volume bot.");
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.STOPPED_DUE_TO_MAIN_WALLET_BALANCE);
+          break;
+        }
       }
 
       // Update pool info and calculate transaction amounts
@@ -450,31 +476,6 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
       });
-
-      // Stop when remaining balance is below threshold
-      if (!sideBuy) {
-        // Check if working time limit exceeded
-        if (workingTime > 0 && works >= workingTime) {
-          console.log("✅✅✅ Working time limit exceeded, stopping volume bot.");
-          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
-          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
-          break;
-        }
-
-        if (volumeMade >= targetVolume) {
-          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
-          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
-          break;
-        }
-
-        const currentLamports = userBalance;
-        if (currentLamports <= MIN_REMAIN_SOL * LAMPORTS_PER_SOL) {
-          console.log("Remaining balance below threshold, stopping volume bot.");
-          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
-          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.STOPPED_DUE_TO_MAIN_WALLET_BALANCE);
-          break;
-        }
-      }
 
       // // Sleep if needed (handled inside executeTransactions for delayTime > 30)
       // if (delayTime <= 30 && success) {
@@ -554,12 +555,39 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       const profitAmount = (Number(mainBalance - startSolAmount) / 10 ** 9) + Number(MIN_REMAIN_SOL);
 
+      // Stop when targe volume reached or remaining balance is below threshold
+      if (!sideBuy) {
+        // Check if working time limit exceeded
+        if (workingTime > 0 && works >= workingTime) {
+          console.log(`✅✅✅ Working time limit exceeded (${works}s >= ${workingTime}s), stopping volume bot.`);
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
+          break;
+        }
+
+        if (volumeMade >= targetVolume) {
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
+          break;
+        }
+
+        const currentLamports = userBalance;
+        if (currentLamports <= MIN_REMAIN_SOL * LAMPORTS_PER_SOL) {
+          console.log("Remaining balance below threshold, stopping volume bot.");
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.STOPPED_DUE_TO_MAIN_WALLET_BALANCE);
+          break;
+        }
+      }
+
       // Create Token Account for PumpFun
       const lookupTableAddress = await createTokenAccountTxPumpswap(
         connection,
         mainWallet,
         baseToken.mint,
-        curbotOnSolana.token?.is2022
+        curbotOnSolana.token?.is2022,
+        botOnSolana.addressLookupTable || "",
+        new PublicKey(curbotOnSolana.pairAddress)
       );
 
       if (lookupTableAddress !== "") {
@@ -630,31 +658,6 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
       });
-
-      // Stop when targe volume reached or remaining balance is below threshold
-      if (!sideBuy) {
-        // Check if working time limit exceeded
-        if (workingTime > 0 && works >= workingTime) {
-          console.log(`✅✅✅ Working time limit exceeded (${works}s >= ${workingTime}s), stopping volume bot.`);
-          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
-          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
-          break;
-        }
-
-        if (volumeMade >= targetVolume) {
-          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
-          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
-          break;
-        }
-
-        const currentLamports = userBalance;
-        if (currentLamports <= MIN_REMAIN_SOL * LAMPORTS_PER_SOL) {
-          console.log("Remaining balance below threshold, stopping volume bot.");
-          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
-          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.STOPPED_DUE_TO_MAIN_WALLET_BALANCE);
-          break;
-        }
-      }
 
       // Sleep if needed (handled inside executeTransactions for delayTime > 30)
       // if (delayTime <= 30 && success) {
@@ -734,13 +737,44 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
 
       const profitAmount = (Number(mainBalance - startSolAmount) / 10 ** 9) + Number(MIN_REMAIN_SOL);
 
+      // Stop when target volume reached or remaining balance is below threshold
+      if (!sideBuy) {
+        // Check if working time limit exceeded
+        if (workingTime > 0 && works >= workingTime) {
+          console.log(`✅✅✅ Working time limit exceeded (${works}s >= ${workingTime}s), stopping volume bot.`);
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
+          break;
+        }
+
+        if (volumeMade >= targetVolume) {
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
+          break;
+        }
+
+        const currentLamports = userBalance;
+        if (currentLamports <= MIN_REMAIN_SOL * LAMPORTS_PER_SOL) {
+          console.log("Remaining balance below threshold, stopping volume bot.");
+          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
+          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.STOPPED_DUE_TO_MAIN_WALLET_BALANCE);
+          break;
+        }
+      }
+
       // Create Token Account for PumpFun
       const lookupTableAddress = await createTokenAccountTxPumpFun(
         connection,
         mainWallet,
         baseToken.mint,
-        baseToken.programId.equals(TOKEN_2022_PROGRAM_ID)
+        baseToken.programId.equals(TOKEN_2022_PROGRAM_ID),
+        botOnSolana.addressLookupTable || ""
       );
+
+      if (lookupTableAddress) {
+        botOnSolana.addressLookupTable = lookupTableAddress.toString();
+        await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, { addressLookupTable: lookupTableAddress });
+      }
 
       // Update pool info and calculate transaction amounts
       const { maxBuyAmount, newMadeVolume, transactions } = await prepareTransactions(
@@ -803,31 +837,6 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
       await VolumeBotModel.findByIdAndUpdate(botOnSolana._id, {
         workedSeconds: workedSeconds,
       });
-
-      // Stop when target volume reached or remaining balance is below threshold
-      if (!sideBuy) {
-        // Check if working time limit exceeded
-        if (workingTime > 0 && works >= workingTime) {
-          console.log(`✅✅✅ Working time limit exceeded (${works}s >= ${workingTime}s), stopping volume bot.`);
-          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
-          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.EXPIRED_WORKING_TIME);
-          break;
-        }
-
-        if (volumeMade >= targetVolume) {
-          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
-          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.ARCHIVED_TARGET_VOLUME);
-          break;
-        }
-
-        const currentLamports = userBalance;
-        if (currentLamports <= MIN_REMAIN_SOL * LAMPORTS_PER_SOL) {
-          console.log("Remaining balance below threshold, stopping volume bot.");
-          await handleCompletedBot(botOnSolana, curbotOnSolana, profitAmount, baseToken, poolInfo, quoteToken, isCPMM);
-          await volumeBotUpdateStatus(botOnSolana._id, BOT_STATUS.STOPPED_DUE_TO_MAIN_WALLET_BALANCE);
-          break;
-        }
-      }
 
       // // Sleep if needed (handled inside executeTransactions for delayTime > 30)
       // if (delayTime <= 30 && success) {

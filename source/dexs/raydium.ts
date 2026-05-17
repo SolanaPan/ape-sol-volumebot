@@ -52,7 +52,8 @@ export const createTokenAccountTxRaydium = async (
   poolInfo: any,
   raydium: Raydium | undefined,
   is2022: boolean = false,
-  useUSD1: boolean = false
+  useUSD1: boolean = false,
+  addressLookupTable: string = ""
 ) => {
   if (raydium == undefined) {
     return null;
@@ -60,6 +61,8 @@ export const createTokenAccountTxRaydium = async (
 
   const instructions = [];
   let idx = 0;
+  const shouldCreateLookupTable = !addressLookupTable;
+  let lookupTableAddress: PublicKey | null = null;
 
   const associatedToken = getAssociatedTokenAddressSync(
     mint,
@@ -108,108 +111,116 @@ export const createTokenAccountTxRaydium = async (
     }
   }
 
-  console.log("*********** creating addressLookupTable...", idx);
+  if (shouldCreateLookupTable) {
+    console.log("*********** creating addressLookupTable...", idx);
 
-  let poolType = "",
-    poolKeys;
-  const addressList = [];
+    let poolType = "",
+      poolKeys;
+    const addressList = [];
 
-  if (isValidCpmm(poolInfo.programId)) {
-    poolType = "cpmm";
-  } else if (isValidAmm(poolInfo.programId)) {
-    poolType = "amm";
-  } else if (isValidClmm(poolInfo.programId)) {
-    poolType = "clmm";
-  } else if (isValidLaunchpad(poolInfo.programId)) {
-    poolType = "launchlab";
-  }
+    if (isValidCpmm(poolInfo.programId)) {
+      poolType = "cpmm";
+    } else if (isValidAmm(poolInfo.programId)) {
+      poolType = "amm";
+    } else if (isValidClmm(poolInfo.programId)) {
+      poolType = "clmm";
+    } else if (isValidLaunchpad(poolInfo.programId)) {
+      poolType = "launchlab";
+    }
 
-  if (poolType == "cpmm") {
-    poolKeys = await raydium.cpmm.getCpmmPoolKeys(poolInfo.id);
-    // console.log("========= cpmm ===========", poolKeys);
+    if (poolType == "cpmm") {
+      poolKeys = await raydium.cpmm.getCpmmPoolKeys(poolInfo.id);
+      // console.log("========= cpmm ===========", poolKeys);
 
-    addressList.push(poolKeys.authority);
-    addressList.push(poolKeys.id);
-    addressList.push(poolKeys.mintA.address);
-    addressList.push(poolKeys.mintA.programId);
-    addressList.push(poolKeys.mintB.address);
-    addressList.push(poolKeys.mintB.programId);
-    addressList.push(poolKeys.mintLp.address);
-    addressList.push(poolKeys.mintLp.programId);
-    addressList.push(poolKeys.programId);
-    addressList.push(poolKeys.vault.A);
-    addressList.push(poolKeys.vault.B);
-  } else if (poolType == "clmm") {
-    poolKeys = await raydium.clmm.getClmmPoolKeys(poolInfo.id);
+      addressList.push(poolKeys.authority);
+      addressList.push(poolKeys.id);
+      addressList.push(poolKeys.mintA.address);
+      addressList.push(poolKeys.mintA.programId);
+      addressList.push(poolKeys.mintB.address);
+      addressList.push(poolKeys.mintB.programId);
+      addressList.push(poolKeys.mintLp.address);
+      addressList.push(poolKeys.mintLp.programId);
+      addressList.push(poolKeys.programId);
+      addressList.push(poolKeys.vault.A);
+      addressList.push(poolKeys.vault.B);
+    } else if (poolType == "clmm") {
+      poolKeys = await raydium.clmm.getClmmPoolKeys(poolInfo.id);
 
-    addressList.push(poolKeys.id);
-    addressList.push(poolKeys.mintA.address);
-    addressList.push(poolKeys.mintA.programId);
-    addressList.push(poolKeys.mintB.address);
-    addressList.push(poolKeys.mintB.programId);
-    addressList.push(poolKeys.programId);
-    addressList.push(poolKeys.vault.A);
-    addressList.push(poolKeys.vault.B);
-  } else if (poolType == "amm") {
-    poolKeys = await raydium.liquidity.getAmmPoolKeys(poolInfo.id);
+      addressList.push(poolKeys.id);
+      addressList.push(poolKeys.mintA.address);
+      addressList.push(poolKeys.mintA.programId);
+      addressList.push(poolKeys.mintB.address);
+      addressList.push(poolKeys.mintB.programId);
+      addressList.push(poolKeys.programId);
+      addressList.push(poolKeys.vault.A);
+      addressList.push(poolKeys.vault.B);
+    } else if (poolType == "amm") {
+      poolKeys = await raydium.liquidity.getAmmPoolKeys(poolInfo.id);
 
-    addressList.push(poolKeys.programId);
-    addressList.push(poolKeys.id);
-    addressList.push(poolKeys.mintA.address);
-    addressList.push(poolKeys.mintA.programId);
-    addressList.push(poolKeys.mintB.address);
-    addressList.push(poolKeys.mintB.programId);
-    addressList.push(poolKeys.vault.A);
-    addressList.push(poolKeys.vault.B);
-    addressList.push(poolKeys.authority);
-    addressList.push(poolKeys.openOrders);
-    addressList.push(poolKeys.targetOrders);
-    addressList.push(poolKeys.mintLp.address);
-    addressList.push(poolKeys.mintLp.programId);
-    addressList.push(poolKeys.marketProgramId);
-    addressList.push(poolKeys.marketId);
-    addressList.push(poolKeys.marketAuthority);
-    addressList.push(poolKeys.marketBaseVault);
-    addressList.push(poolKeys.marketQuoteVault);
-    addressList.push(poolKeys.marketBids);
-    addressList.push(poolKeys.marketAsks);
-    addressList.push(poolKeys.marketEventQueue);
-  } else if (poolType == "launchlab") {
-    addressList.push(poolInfo.programId);
-    addressList.push(poolInfo.id);
-    addressList.push(poolInfo.mintA.address);
-    addressList.push(poolInfo.mintB.address);
-    addressList.push(poolInfo.platformId);
-  }
+      addressList.push(poolKeys.programId);
+      addressList.push(poolKeys.id);
+      addressList.push(poolKeys.mintA.address);
+      addressList.push(poolKeys.mintA.programId);
+      addressList.push(poolKeys.mintB.address);
+      addressList.push(poolKeys.mintB.programId);
+      addressList.push(poolKeys.vault.A);
+      addressList.push(poolKeys.vault.B);
+      addressList.push(poolKeys.authority);
+      addressList.push(poolKeys.openOrders);
+      addressList.push(poolKeys.targetOrders);
+      addressList.push(poolKeys.mintLp.address);
+      addressList.push(poolKeys.mintLp.programId);
+      addressList.push(poolKeys.marketProgramId);
+      addressList.push(poolKeys.marketId);
+      addressList.push(poolKeys.marketAuthority);
+      addressList.push(poolKeys.marketBaseVault);
+      addressList.push(poolKeys.marketQuoteVault);
+      addressList.push(poolKeys.marketBids);
+      addressList.push(poolKeys.marketAsks);
+      addressList.push(poolKeys.marketEventQueue);
+    } else if (poolType == "launchlab") {
+      addressList.push(poolInfo.programId);
+      addressList.push(poolInfo.id);
+      addressList.push(poolInfo.mintA.address);
+      addressList.push(poolInfo.mintB.address);
+      addressList.push(poolInfo.platformId);
+    }
 
-  // console.log("here", poolKeys);
+    // console.log("here", poolKeys);
 
-  // const slot = await connection.getSlot();
-  const currentSlot = await connection.getSlot();
-  const startSlot = currentSlot - 200;
-  const slots = await connection.getBlocks(startSlot, currentSlot);
-  if (slots.length < 100) {
-    throw new Error(
-      `Could find only ${slots.length} slots on the main fork`
-    );
-  }
+    // const slot = await connection.getSlot();
+    const currentSlot = await connection.getSlot();
+    const startSlot = currentSlot - 200;
+    const slots = await connection.getBlocks(startSlot, currentSlot);
+    if (slots.length < 100) {
+      throw new Error(
+        `Could find only ${slots.length} slots on the main fork`
+      );
+    }
 
-  const [lookupTableInst, lookupTableAddress] =
-    AddressLookupTableProgram.createLookupTable({
-      authority: mainWallet.publicKey,
+    const [lookupTableInst, createdLookupTableAddress] =
+      AddressLookupTableProgram.createLookupTable({
+        authority: mainWallet.publicKey,
+        payer: mainWallet.publicKey,
+        recentSlot: slots[9],
+      });
+
+    lookupTableAddress = createdLookupTableAddress;
+
+    const extendInstruction = AddressLookupTableProgram.extendLookupTable({
       payer: mainWallet.publicKey,
-      recentSlot: slots[9],
+      authority: mainWallet.publicKey,
+      lookupTable: lookupTableAddress,
+      addresses: addressList.map((item) => new PublicKey(item)),
     });
 
-  const extendInstruction = AddressLookupTableProgram.extendLookupTable({
-    payer: mainWallet.publicKey,
-    authority: mainWallet.publicKey,
-    lookupTable: lookupTableAddress,
-    addresses: addressList.map((item) => new PublicKey(item)),
-  });
+    instructions.push(lookupTableInst);
+    instructions.push(extendInstruction);
+  }
 
-  instructions.push(lookupTableInst);
-  instructions.push(extendInstruction);
+  if (instructions.length === 0) {
+    return "";
+  }
 
   // add jito tip instruction
   const jitoTipIx = await getTipInstruction(
@@ -231,12 +242,18 @@ export const createTokenAccountTxRaydium = async (
   // console.log("sim : ", sim);
 
   const ret = await createAndSendBundleEx(connection, mainWallet, [tx]);
-  console.log("[raydium] Create tokenAccount & addressLookupTable : ", ret, lookupTableAddress.toBase58());
-  if (ret) {
+  if (lookupTableAddress) {
+    console.log("[raydium] Create tokenAccount & addressLookupTable : ", ret, lookupTableAddress.toBase58());
+  } else {
+    console.log("[raydium] Create tokenAccount : ", ret);
+  }
+
+  if (ret && lookupTableAddress) {
     await sleep(25000);
     return lookupTableAddress;
   }
-  else return "";
+
+  return "";
 };
 
 export const makeBuySellTransactionRaydiumVolume = async (
