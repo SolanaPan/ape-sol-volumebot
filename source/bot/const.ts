@@ -58,7 +58,7 @@ export const token = process.env.BOT_TOKEN;
 export const JITO_TIMEOUT = 30;
 export const JITO_TIP_ACCOUNT = "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt";
 export const BONUS_AMOUNT = 5000;
-export const ADMIN_CHANNEL = -1003366147098;
+export const ADMIN_CHANNEL = -1003684760143;
 
 export const splStartStopNotifies = new Set<number>();
 export const GenerateNewWallets = new Set<number>();
@@ -110,13 +110,57 @@ export const BOT_STATUS = {
   EXPIRED_WORKING_TIME: 10,
 };
 
+export const WSOL_MINT = "So11111111111111111111111111111111111111112";
+export const USD1_MINT = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB";
+
+// Default (WSOL) — kept for backwards compatibility with any caller that still
+// imports it. New code should build a per-bot quote token via getQuoteToken().
 export const quoteToken = new Token(
   TOKEN_PROGRAM_ID,
-  "So11111111111111111111111111111111111111112",
+  WSOL_MINT,
   9,
   "WSOL",
   "WSOL"
 );
+
+export const USD1_TOKEN = new Token(
+  TOKEN_PROGRAM_ID,
+  USD1_MINT,
+  6,
+  "USD1",
+  "USD1"
+);
+
+/**
+ * Build a Raydium Token object for a bot's configured quote token.
+ * Falls back to WSOL when the bot has no quoteTokenAddress stored
+ * (older records or SOL pools).
+ */
+export const getQuoteToken = (bot: any): Token => {
+  const address = bot?.quoteTokenAddress;
+  if (!address || address === WSOL_MINT) return quoteToken;
+  if (address === USD1_MINT) return USD1_TOKEN;
+
+  // Generic fallback — build from stored metadata.
+  return new Token(
+    TOKEN_PROGRAM_ID,
+    address,
+    Number(bot?.quoteTokenDecimals) || 9,
+    bot?.quoteTokenSymbol || "",
+    bot?.quoteTokenSymbol || ""
+  );
+};
+
+export const isUSD1Quote = (bot: any): boolean => bot?.quoteTokenAddress === USD1_MINT;
+
+/**
+ * USD price of one unit of the quote token (used to translate quote amounts
+ * into USD for volume accounting). USD1 is a stablecoin ≈ $1.
+ */
+export const getQuoteUsdPrice = (bot: any, solPrice: number): number => {
+  if (isUSD1Quote(bot)) return 1;
+  return solPrice;
+};
 
 export const resetNotifies = (id: any) => {
   MaxBuyNotifies.delete(id);

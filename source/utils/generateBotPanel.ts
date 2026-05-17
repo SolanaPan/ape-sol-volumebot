@@ -38,6 +38,8 @@ interface BotStats {
     subWalletNums: number;
     status: number;
     startStopFlag: number;
+    quoteTokenSymbol?: string;
+    quoteTokenAddress?: string;
 }
 
 interface WalletInfo {
@@ -99,8 +101,12 @@ export async function generateSolanaBotMessage(
 ): Promise<string> {
     // return new Promise(async (resolve, reject) => {
     const isFinished = botStats.status != BOT_STATUS.RUNNING && botStats.volumeMade >= botStats.targetVolume;
+    // Dynamic quote token: SOL by default, USD1 when the bot is configured for a USD1 pool.
+    const quoteSymbol = botStats?.quoteTokenSymbol || "SOL";
+    // For USD value math we need the quote's USD price. USD1 ≈ 1.
+    const quoteUsdPrice = quoteSymbol === "USD1" ? 1 : SOL_PRICE;
     // const sol_price = Number((await getSolanaPriceBinance())?.price);
-    const finishIn = Math.floor((botStats?.targetVolume - botStats?.volumeMade) / (botStats?.maxBuy * 8 * SOL_PRICE) * botStats?.delayTime / 60);
+    const finishIn = Math.floor((botStats?.targetVolume - botStats?.volumeMade) / (botStats?.maxBuy * 8 * quoteUsdPrice) * botStats?.delayTime / 60);
     const hours = Math.floor(finishIn/60);
     const minutes = finishIn % 60;
     let textFinishAt = hours>0 ? `<code>${hours}</code> h` : "";
@@ -115,17 +121,17 @@ export async function generateSolanaBotMessage(
 
     return `⚡️ <b>${process.env.BOT_TITLE}</b> ⚡️
 
-  📌 <b>Token address</b>: 
+  📌 <b>Token address</b>:
       <code>${tokenAddress}</code>
-  📌 <b>Pair address</b>: 
+  📌 <b>Pair address</b>:
       <code>${botStats.pairAddress}</code>
-  
+
   📡 <b>DEX</b>: ${botStats?.dexId} / ${botStats?.poolType}
-  🔗 <b>Pair</b> : <b><a href='https://dexscreener.com/solana/${tokenAddress}'>${tokenDetails?.symbol}</a></b> / SOL
-  
+  🔗 <b>Pair</b> : <b><a href='https://dexscreener.com/solana/${tokenAddress}'>${tokenDetails?.symbol}</a></b> / ${quoteSymbol}
+
   🎭 <b>Status</b> : ${botStats.startStopFlag == 1 ? "🟢 Running" : (isFinished? "🟠 Finished": "🟡 Pending")}
-  
-  🛒 <b>Max Buy</b> : <code>${formatNumberWithUnit(botStats.maxBuy, 1)}</code> SOL
+
+  🛒 <b>Max Buy</b> : <code>${formatNumberWithUnit(botStats.maxBuy, 1)}</code> ${quoteSymbol}
   🏃 <b>Speed</b> : buy/sell in every <code>${formatNumberWithUnit(botStats.delayTime, 0)}</code> seconds
   💥 <b>Working Time</b> : <code>${formatTime(botStats.workingTime)}</code>
 
@@ -135,8 +141,8 @@ export async function generateSolanaBotMessage(
   ⛺️ <b>TXNs Made</b>: <code>${botStats.txDone}</code>
 
   🏁 <b>Finish at</b>: ${textFinishAt}
-  
-  👝 <b>Your Deposit Wallet</b>: 
+
+  👝 <b>Your Deposit Wallet</b>:
       <code>${walletInfo.address}</code>
   💰 <b>Balance</b>: <code>${Number(walletInfo.balance/LAMPORTS_PER_SOL).toFixed(3)}</code> SOL
     `;

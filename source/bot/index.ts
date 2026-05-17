@@ -124,6 +124,8 @@ import {
   TARGET_HOLDER_MAX,
   ADMIN_CHANNEL,
   WorkingTimeNotifies,
+  WSOL_MINT,
+  USD1_MINT,
 } from "./const";
 import { SystemProgram } from "@solana/web3.js";
 import { sleep } from "../utils/common";
@@ -163,6 +165,41 @@ const MAIN_WALLET_KEY = process.env.MAIN_WALLET_KEY
   ? process.env.MAIN_WALLET_KEY
   : "";
 const MAIN_WALLET = Keypair.fromSecretKey(bs58.decode(MAIN_WALLET_KEY));
+
+/**
+ * Given a DexScreener/Moralis pair object and the user's target token address,
+ * return the quote-side token info to persist on the volume bot record.
+ *
+ * DexScreener returns `baseToken` and `quoteToken` in its own convention
+ * (base = the pair's base, quote = the pair's quote). The user's target token
+ * can be on either side, so we pick "the other side" as the quote we trade against.
+ *
+ * Falls back to SOL/WSOL values so SOL pools keep working exactly as before.
+ */
+const extractQuoteTokenInfo = (pair: any, targetTokenAddress: string) => {
+  const base = pair?.baseToken;
+  const quote = pair?.quoteToken;
+  // Default: use dexscreener's quoteToken.
+  let q = quote;
+  // If the user's target token is the quote side of the pair, the "other" token
+  // is the base — we flip so we're always storing the non-target side.
+  if (quote?.address && targetTokenAddress && quote.address.toLowerCase() === targetTokenAddress.toLowerCase()) {
+    q = base;
+  }
+
+  const address = q?.address || WSOL_MINT;
+  const symbol = q?.symbol || (address === USD1_MINT ? "USD1" : "SOL");
+  // DexScreener doesn't expose decimals, so infer from known mints.
+  let decimals = 9;
+  if (address === USD1_MINT) decimals = 6;
+  else if (address === WSOL_MINT) decimals = 9;
+
+  return {
+    quoteTokenAddress: address,
+    quoteTokenSymbol: symbol,
+    quoteTokenDecimals: decimals,
+  };
+};
 
 dotenv.config();
 
@@ -1775,8 +1812,8 @@ bot.on("message", async (ctx: any) => {
             showPoolSelectionPanelMsg(ctx, pairs);
           } else {
             // update pairAddress and poolType in the database
-            await VolumeBotModel.findOneAndUpdate({ userId: userId }, { pairAddress: pairs[0]?.pairAddress, dexId: pairs[0]?.dexId, poolType: pairs[0]?.labels?.join("-") });
-            
+            await VolumeBotModel.findOneAndUpdate({ userId: userId }, { pairAddress: pairs[0]?.pairAddress, dexId: pairs[0]?.dexId, poolType: pairs[0]?.labels?.join("-"), ...extractQuoteTokenInfo(pairs[0], tokenAddress) });
+
             // show bot mode message
             // showBotModePanelMsg(ctx, selectSpeedPlanMenu);
             showMainPanelMsg(ctx, splMenu, connection, ctx.from.id);
@@ -1790,8 +1827,8 @@ bot.on("message", async (ctx: any) => {
               showPoolSelectionPanelMsg(ctx, pairs);
             } else {
               // update pairAddress and poolType in the database
-              await VolumeBotModel.findOneAndUpdate({ userId: userId }, { pairAddress: pairs[0]?.pairAddress, dexId: pairs[0]?.dexId, poolType: pairs[0]?.labels?.join("-") });
-              
+              await VolumeBotModel.findOneAndUpdate({ userId: userId }, { pairAddress: pairs[0]?.pairAddress, dexId: pairs[0]?.dexId, poolType: pairs[0]?.labels?.join("-"), ...extractQuoteTokenInfo(pairs[0], tokenAddress) });
+
               // show bot mode message
               // showBotModePanelMsg(ctx, selectSpeedPlanMenu);
               showMainPanelMsg(ctx, splMenu, connection, ctx.from.id);
@@ -1860,8 +1897,12 @@ bot.on("callback_query", async (ctx: any) => {
         pairInfo = await getPairInfoWithMoralis(pairAddress, process.env.MORALIS_API_KEY || "");
       }
 
+      // Determine the user's target token address to find the quote side.
+      const targetBot = await VolumeBotModel.findOne({ userId }).populate("token");
+      const targetTokenAddr = (targetBot as any)?.token?.address || "";
+
       // update pairAddress in the database
-      await VolumeBotModel.findOneAndUpdate({ userId: userId }, { pairAddress: pairAddress, dexId: pairInfo?.dexId, poolType: pairInfo?.labels?.join("-") });
+      await VolumeBotModel.findOneAndUpdate({ userId: userId }, { pairAddress: pairAddress, dexId: pairInfo?.dexId, poolType: pairInfo?.labels?.join("-"), ...extractQuoteTokenInfo(pairInfo, targetTokenAddr) });
 
       // show bot mode message
       // showBotModePanelMsg(ctx, selectSpeedPlanMenu);

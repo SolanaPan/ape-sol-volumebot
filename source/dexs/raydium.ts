@@ -36,6 +36,7 @@ import { isValidAmm, isValidClmm, isValidCpmm, isValidLaunchpad } from "../utils
 import {
   JITO_BUNDLE_TIP,
   MAKER_BOT_MAX_PER_TX,
+  USD1_MINT,
 } from "../bot/const";
 import { createAndSendBundleEx, getRandomNumber, getTipInstruction, getTokenBalance, makeVersionedTransactions, makeVersionedTransactionsWithMultiSign } from "../utils/common";
 import { addRaydiumSDK } from "../bot";
@@ -50,7 +51,8 @@ export const createTokenAccountTxRaydium = async (
   mint: PublicKey,
   poolInfo: any,
   raydium: Raydium | undefined,
-  is2022: boolean = false
+  is2022: boolean = false,
+  useUSD1: boolean = false
 ) => {
   if (raydium == undefined) {
     return null;
@@ -79,6 +81,31 @@ export const createTokenAccountTxRaydium = async (
         is2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
       )
     );
+  }
+
+  if(useUSD1) {
+    console.log("*********** checking raydium ATA for USD1...", idx);
+    const associatedTokenUSD1 = getAssociatedTokenAddressSync(
+      new PublicKey(USD1_MINT),
+      mainWallet.publicKey,
+      false,
+      TOKEN_PROGRAM_ID
+    );
+
+    const infoUSD1 = await connection.getAccountInfo(associatedTokenUSD1);
+
+    if (!infoUSD1) {
+      console.log("*********** creating raydium ATA for USD1...", idx);
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          mainWallet.publicKey,
+          associatedTokenUSD1,
+          mainWallet.publicKey,
+          new PublicKey(USD1_MINT),
+          is2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
+        )
+      );
+    }
   }
 
   console.log("*********** creating addressLookupTable...", idx);

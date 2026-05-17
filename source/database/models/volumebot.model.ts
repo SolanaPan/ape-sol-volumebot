@@ -14,6 +14,9 @@ const volumeBotSchema = new mongoose.Schema({
 	pairAddress: { type: String, default: "" },
 	poolType: { type: String, default: "" },
 	dexId: { type: String, default: "" },
+	quoteTokenAddress: { type: String, default: "So11111111111111111111111111111111111111112" },
+	quoteTokenSymbol: { type: String, default: "SOL" },
+	quoteTokenDecimals: { type: Number, default: 9 },
 	boostType: { 
 		volumeBoost: { type: Boolean, default: true },
 		makerBoost: { type: Boolean, default: false },

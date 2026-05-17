@@ -9,6 +9,7 @@ const axios = require('axios');
 
 // Solana token address
 const SOL_ADDR = "So11111111111111111111111111111111111111112";
+const USD1_ADDR = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB";
 
 /**
  * Find all token pairs for a given token address using DexScreener API
@@ -57,7 +58,7 @@ export async function findTokenPairsWithDexScreener(tokenAddress: string, chain:
           return false;
         }
 
-        if (pair.baseToken.address !== SOL_ADDR && pair.quoteToken.address !== SOL_ADDR) {
+        if (pair.baseToken.address !== SOL_ADDR && pair.quoteToken.address !== SOL_ADDR && pair.baseToken.address !== USD1_ADDR && pair.quoteToken.address !== USD1_ADDR) {
           return false;
         }
 

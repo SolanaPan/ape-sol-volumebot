@@ -252,6 +252,8 @@ export const getBotPanelMsg = async (
       subWalletNums: botOnSolana?.subWalletNums || 4,
       status: botOnSolana?.status || 0,
       startStopFlag: botOnSolana?.enable || 0,
+      quoteTokenSymbol: botOnSolana?.quoteTokenSymbol || "SOL",
+      quoteTokenAddress: botOnSolana?.quoteTokenAddress || "",
     },
     {
       address: botOnSolana.mainWallet.publicKey!,

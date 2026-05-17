@@ -52,7 +52,7 @@ import {
   connection,
   connection2,
   MAX_WALLET_COUNT,
-  quoteToken,
+  quoteToken as DEFAULT_QUOTE_TOKEN,
   raydiumSDKList,
   MAKER_BOT_MAX_PER_TX,
   volumeBots,
@@ -62,6 +62,12 @@ import {
   ONE_K_VOL_PRICE,
   BONUS_THRESHOLD,
   BONUS_WALLET,
+  getQuoteToken,
+  getQuoteUsdPrice,
+  isUSD1Quote,
+  USD1_MINT,
+  USD1_TOKEN,
+  WSOL_MINT,
 } from "./const";
 import { SystemProgram } from "@solana/web3.js";
 import { sleep } from "../utils/common";
@@ -69,7 +75,8 @@ import * as path from 'path';
 import { randomInt } from "crypto";
 import { Connection } from "@solana/web3.js";
 import { TransactionInstruction } from "@solana/web3.js";
-import { createTokenAccountTxRaydium, makeBuySellTransactionRaydiumVolume, makeSellTransactionRaydium } from "../dexs/raydium";
+import { buyToken as raydiumBuyToken, buyTokenInstructionRaydium, createTokenAccountTxRaydium, makeBuySellTransactionRaydiumVolume, makeSellTransactionRaydium, sellToken as raydiumSellToken } from "../dexs/raydium";
+import { getAssociatedTokenAddressSync, getAccount, TOKEN_PROGRAM_ID as SPL_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { addRaydiumSDK, alertToAdmins, bot, notifyToChannel, sessions } from ".";
 import { createTokenAccountTxPumpFun, makeBuySellTransactionPumpFunVolume } from "../dexs/pumpfun";
 import { createTokenAccountTxMeteora, initMeteoraBuy, makeBuySellTransactionMeteoraVolume } from "../dexs/meteora";
@@ -131,6 +138,168 @@ export async function volumeMaker() {
   }
 }
 
+// ============================================================================
+// USD1 quote-token support
+// ============================================================================
+//
+// When the user selects a USD1 pool (TOKEN/USD1), the sub-wallets still need
+// to pay rent/Jito tips in SOL, but the *swap input* has to be USD1. Users
+// only deposit SOL into the main wallet, so the bot has to bootstrap its own
+// USD1 balance by swapping a chunk of SOL → USD1 once (and refills as needed).
+// Sub-wallets are then topped up with USD1 via SPL transfers each iteration,
+// analogous to the current SOL rent transfer.
+
+// Cleanup on bot completion: leftover USD1 on the main wallet is swapped back
+// to SOL so withdrawal stays a single-asset flow.
+
+const USD1_BOOTSTRAP_MULT = 6; // swap enough SOL→USD1 to cover ~N iterations
+const USD1_REFILL_THRESHOLD_MULT = 1.5; // refill when balance < maxBuy * this
+
+async function getMainWalletUsd1Balance(mainWalletPubkey: PublicKey): Promise<number> {
+  try {
+    const ata = getAssociatedTokenAddressSync(new PublicKey(USD1_MINT), mainWalletPubkey, false, SPL_TOKEN_PROGRAM_ID);
+    const acc = await getAccount(connection, ata, "confirmed", SPL_TOKEN_PROGRAM_ID);
+    return Number(acc.amount);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Build SOL → USD1 swap instructions for in-bundle refill, instead of sending
+ * a separate standalone transaction. Used by prepareTransactions to prepend
+ * the swap to the funding transaction so the refill and the sub-wallet rent
+ * transfers land atomically in the same Jito bundle slot.
+ *
+ * Contract:
+ * - Returns `{ ixs: [], minOut: 0 }` when no refill is needed (current balance
+ *   already >= target). Caller should treat this as a no-op.
+ * - Returns `{ ixs, minOut }` with the swap ixs when refill is needed and
+ *   successfully built.
+ * - Returns `null` on hard failure (no pool, SDK init failed, SOL reserve
+ *   clamp triggered with no spendable SOL, etc). Caller decides whether to
+ *   proceed without the refill or abort the iteration.
+ *
+ * The SOL reserve clamp from ensureMainWalletUsd1Balance is preserved so the
+ * wallet always keeps enough SOL for tx fees, Jito tips, and sub-wallet rent.
+ */
+async function buildRefillSolToUsd1Ixs(
+  mainWallet: Keypair,
+  targetUsd1Raw: number
+): Promise<{ ixs: TransactionInstruction[]; minOut: BN } | null> {
+  try {
+    const currentRaw = await getMainWalletUsd1Balance(mainWallet.publicKey);
+    if (currentRaw >= targetUsd1Raw) {
+      return { ixs: [], minOut: new BN(0) };
+    }
+
+    const needed = targetUsd1Raw - currentRaw; // raw USD1 (6 decimals)
+    const solNeeded = (needed / 1e6) / Math.max(SOL_PRICE, 1);
+    // 3% buffer for slippage + fees
+    let solToSwap = Math.ceil(solNeeded * 1.03 * LAMPORTS_PER_SOL);
+
+    const currentSolLamports = await connection.getBalance(mainWallet.publicKey);
+    const reserveLamports = Math.ceil(MIN_REMAIN_SOL * LAMPORTS_PER_SOL);
+    const spendable = currentSolLamports - reserveLamports;
+    if (spendable <= 0) {
+      console.log(`[USD1] Main wallet has ${currentSolLamports / LAMPORTS_PER_SOL} SOL <= reserve ${MIN_REMAIN_SOL}; cannot refill USD1 in-bundle.`);
+      return null;
+    }
+    if (solToSwap > spendable) {
+      console.log(`[USD1] Clamping in-bundle refill: needed ${solToSwap / LAMPORTS_PER_SOL} SOL, spendable ${spendable / LAMPORTS_PER_SOL} SOL (reserve ${MIN_REMAIN_SOL} SOL)`);
+      solToSwap = spendable;
+    }
+
+    await addRaydiumSDK(mainWallet.publicKey);
+    const raydium = raydiumSDKList.get(mainWallet.publicKey.toString());
+    if (!raydium) {
+      console.log("[USD1] Raydium SDK init failed for main wallet (in-bundle refill)");
+      return null;
+    }
+
+    const solUsd1Pool = await getPoolInfo(
+      connection2,
+      DEFAULT_QUOTE_TOKEN, // WSOL
+      USD1_TOKEN,          // USD1 (base/target)
+      raydium,
+      "amm"
+    );
+    if (!solUsd1Pool || !solUsd1Pool.id) {
+      console.log("[USD1] No Raydium SOL/USD1 pool found (in-bundle refill)");
+      return null;
+    }
+
+    const { instructions, minOut } = await buyTokenInstructionRaydium(
+      connection,
+      mainWallet,
+      solToSwap,
+      DEFAULT_QUOTE_TOKEN,
+      USD1_TOKEN,
+      solUsd1Pool,
+      raydium
+    );
+
+    if (!instructions || instructions.length === 0) {
+      console.log("[USD1] In-bundle refill: buyTokenInstructionRaydium returned no ixs");
+      return null;
+    }
+
+    console.log(`[USD1] In-bundle refill prepared: spending ${solToSwap / LAMPORTS_PER_SOL} SOL → USD1, minOut=${minOut?.toString?.() ?? minOut}, ixs=${instructions.length}`);
+    return { ixs: instructions, minOut: new BN(minOut) };
+  } catch (err) {
+    console.error("[USD1] buildRefillSolToUsd1Ixs failed:", err);
+    return null;
+  }
+}
+
+/**
+ * Swap any remaining USD1 on the main wallet back to SOL. Used on bot
+ * completion so the user's withdraw flow stays SOL-only.
+ */
+async function liquidateMainWalletUsd1ToSol(mainWallet: Keypair): Promise<boolean> {
+  try {
+    const balanceRaw = await getMainWalletUsd1Balance(mainWallet.publicKey);
+    if (balanceRaw <= 0) return true;
+
+    // Keep a tiny dust reserve to avoid closing-account edge cases.
+    const toSell = balanceRaw - 1;
+    if (toSell <= 0) return true;
+
+    await addRaydiumSDK(mainWallet.publicKey);
+    const raydium = raydiumSDKList.get(mainWallet.publicKey.toString());
+    if (!raydium) return false;
+
+    const solUsd1Pool = await getPoolInfo(
+      connection2,
+      DEFAULT_QUOTE_TOKEN,
+      USD1_TOKEN,
+      raydium,
+      "amm"
+    );
+    if (!solUsd1Pool || !solUsd1Pool.id) return false;
+
+    const res = await raydiumSellToken(
+      connection,
+      mainWallet,
+      new BN(toSell),
+      DEFAULT_QUOTE_TOKEN,
+      USD1_TOKEN,
+      solUsd1Pool,
+      raydium
+    );
+
+    if (!res || !res.transaction) return false;
+
+    const sig = await connection.sendTransaction(res.transaction, { skipPreflight: false, preflightCommitment: "confirmed" });
+    await connection.confirmTransaction(sig, "confirmed");
+    console.log(`[USD1] Liquidated ${toSell / 1e6} USD1 → SOL: ${sig}`);
+    return true;
+  } catch (err) {
+    console.error("[USD1] liquidateMainWalletUsd1ToSol failed:", err);
+    return false;
+  }
+}
+
 async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
   // Early return checks and initialization
   if (!sideBuy) {
@@ -151,6 +320,12 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
   let initialBundleFailedCount = 0;
   let works = 0;
 
+  // Per-bot quote token (WSOL by default, USD1 if the user picked a USD1 pool).
+  // Local `quoteToken` shadows what used to be a global import so existing
+  // call-sites inside this function keep compiling unchanged.
+  const quoteToken = getQuoteToken(curbotOnSolana);
+  const usesUSD1 = isUSD1Quote(curbotOnSolana);
+
   // Initialize token and pool
   const { baseToken, poolInfo, isCPMM } = await initializeTokenAndPool(curbotOnSolana);
   if (!poolInfo) {
@@ -158,9 +333,6 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
     volumeBots.delete(curbotOnSolana._id.toString());
     return;
   }
-
-  // // Update target volume based on deposit and bonus
-  // await updateTargetVolume(curbotOnSolana, poolInfo);
 
   while (running) {
     // Get latest bot info from database
@@ -195,7 +367,8 @@ async function raydiumVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
           baseToken.mint,
           poolInfo,
           raydiumSDKList.get(mainWallet.publicKey.toString()),
-          curbotOnSolana.token?.is2022
+          curbotOnSolana.token?.is2022,
+          usesUSD1
         );
 
         if (lookupTableAddress) {
@@ -340,6 +513,9 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
   let initialBundleFailedCount = 0;
   let works = 0;
 
+  // Pumpswap is SOL-only — the quote is always WSOL.
+  const quoteToken = DEFAULT_QUOTE_TOKEN;
+
   // Initialize token and pool
   const { baseToken, poolInfo, isCPMM } = await initializeTokenAndPool(curbotOnSolana);
   if (!poolInfo) {
@@ -383,6 +559,7 @@ async function pumpSwapVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
         connection,
         mainWallet,
         baseToken.mint,
+        curbotOnSolana.token?.is2022
       );
 
       if (lookupTableAddress !== "") {
@@ -517,6 +694,9 @@ async function pumpfunVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
   let running = true;
   let initialBundleFailedCount = 0;
   let works = 0;
+
+  // Pumpfun is SOL-only — the quote is always WSOL.
+  const quoteToken = DEFAULT_QUOTE_TOKEN;
 
   // Initialize token and pool
   const { baseToken, poolInfo, isCPMM } = await initializeTokenAndPool(curbotOnSolana);
@@ -685,6 +865,9 @@ async function meteoraVolumeMakerFunc(curbotOnSolana: any, sideBuy = false) {
   let running = true;
   let initialBundleFailedCount = 0;
   let works = 0;
+
+  // Meteora volume path currently assumes SOL as the quote.
+  const quoteToken = DEFAULT_QUOTE_TOKEN;
 
   // Initialize token and pool
   const { baseToken, poolInfo, isCPMM } = await initializeTokenAndPool(curbotOnSolana);
@@ -858,6 +1041,9 @@ async function initializeTokenAndPool(curbotOnSolana: any) {
     token,
     curbotOnSolana.token.decimals
   );
+
+  // Per-bot quote token — SOL pools resolve to WSOL, USD1 pools to USD1.
+  const quoteToken = getQuoteToken(curbotOnSolana);
 
   if (curbotOnSolana && curbotOnSolana?.dexId == "raydium") {
     await addRaydiumSDK(mainWallet.publicKey);
@@ -1131,6 +1317,12 @@ async function handleCompletedBot(botOnSolana: any, curbotOnSolana: any, profitA
     }
   }
 
+  // For USD1 bots, convert any remaining USD1 on the main wallet back to SOL
+  // so the user's normal SOL withdraw flow keeps working.
+  if (isUSD1Quote(botOnSolana)) {
+    await liquidateMainWalletUsd1ToSol(mainWallet);
+  }
+
   // Use bonus
   await database.useBonus(curbotOnSolana.userId);
 
@@ -1163,45 +1355,76 @@ async function handleCompletedBot(botOnSolana: any, curbotOnSolana: any, profitA
   // alertToAdmins(finishMsg);
 
   // notify to channel
+  const qSymbolFinished = botOnSolana?.quoteTokenSymbol || "SOL";
   notifyToChannel(
     `Finished 🏁\n
   Chart: <a href="https://dexscreener.com/solana/${botOnSolana?.token?.address}">${botOnSolana?.token?.name}</a>
-  Client: @${sessions.get(botOnSolana?.userId)?.username} (<code>${botOnSolana?.userId}</code>) 
+  Client: @${sessions.get(botOnSolana?.userId)?.username} (<code>${botOnSolana?.userId}</code>)
   Plan: ${botOnSolana?.targetVolume} volume
-  Max Buy: ${botOnSolana?.maxBuy} SOL
+  Max Buy: ${botOnSolana?.maxBuy} ${qSymbolFinished}
   Speed: ${botOnSolana?.delayTime} sec`
   );
 }
 
 // Function 7: Prepare transactions for volume making
 async function prepareTransactions(botOnSolana: any, curbotOnSolana: any, isCPMM: boolean, mainBalance: number, sideBalance: number, subWallets: any, baseToken: Token, quoteToken: Token, poolInfo: any, sideBuy: boolean) {
-  // Get updated pool info and sol price
-  // let sol_price = Number((await getSolanaPriceBinance())?.price);
 
-  // if (curbotOnSolana && curbotOnSolana?.dexId == "raydium") {
-  //   poolInfo = await getPoolInfo(
-  //     connection2,
-  //     quoteToken,
-  //     baseToken,
-  //     raydiumSDKList.get(curbotOnSolana.mainWallet.publicKey.toString()),
-  //   );
+  // Quote-token-aware decimals and USD price.
+  // For SOL pools: quoteDecimals=9, quoteUsdPrice=SOL_PRICE. For USD1: 6, ~1.
+  const usesUSD1 = isUSD1Quote(botOnSolana);
+  const quoteDecimals = Number(botOnSolana?.quoteTokenDecimals) || 9;
+  const quoteUnit = 10 ** quoteDecimals;
+  const quoteUsdPrice = getQuoteUsdPrice(botOnSolana, SOL_PRICE);
+  const quoteSymbol = botOnSolana?.quoteTokenSymbol || "SOL";
 
-  //   if (!poolInfo) {
-  //     throw new Error("[Volume] Can't get pool info");
-  //   }
-  // } else if (curbotOnSolana && curbotOnSolana?.dexId == "meteora") {
-  //   if (curbotOnSolana.poolType == "DYN") {
-  //     poolInfo = await AmmImpl.create(connection, new PublicKey(curbotOnSolana.pairAddress));
-  //   } else if (curbotOnSolana.poolType == "DLMM") {
-  //     poolInfo = await DLMM.create(connection, new PublicKey(curbotOnSolana.pairAddress), { cluster: "mainnet-beta" });
-  //   }
-  // }
+  // Calculate max buy amount (in raw quote-token units: lamports for SOL, 1e6 units for USD1).
+  let maxBuyAmount = Number(botOnSolana.maxBuy) * quoteUnit;
 
-  // Calculate max buy amount
-  let maxBuyAmount = Number(botOnSolana.maxBuy) * LAMPORTS_PER_SOL;
-  if (maxBuyAmount >= (Number((mainBalance) / 4))) {
-    maxBuyAmount = Number((mainBalance) / 4);
-    console.log("Max Buy Amount is too high. Set to 1/4 of main balance: ", maxBuyAmount / LAMPORTS_PER_SOL, mainBalance / LAMPORTS_PER_SOL);
+  // Decode the main wallet early — we may need it both for the USD1 refill
+  // check (below) and for the funding transaction (further down).
+  const mainWallet = Keypair.fromSecretKey(bs58.decode(botOnSolana.mainWallet.privateKey));
+
+  // Compare against the main wallet's quote-token balance (1/4 ceiling).
+  // For SOL, use the SOL lamports balance passed in (mainBalance).
+  // For USD1, fetch the main wallet's USD1 ATA balance since mainBalance is SOL.
+  // If a USD1 refill is needed this iteration, we build the swap instructions
+  // here and use the post-refill projected balance for sizing; the actual
+  // swap instructions are prepended to `fundingIxs` below so they execute in
+  // the same bundle.
+  let availableQuote = mainBalance;
+  let refillIxs: TransactionInstruction[] = [];
+  if (usesUSD1) {
+    try {
+      availableQuote = await getMainWalletUsd1Balance(mainWallet.publicKey);
+    } catch {
+      availableQuote = 0;
+    }
+
+    if (!sideBuy) {
+      const maxBuyRaw = Math.ceil(Number(botOnSolana.maxBuy || 0.01) * quoteUnit);
+      const refillFloor = Math.ceil(maxBuyRaw * MAKER_BOT_MAX_PER_TX * USD1_REFILL_THRESHOLD_MULT);
+      if (availableQuote < refillFloor) {
+        const refillTarget = maxBuyRaw * MAKER_BOT_MAX_PER_TX * USD1_BOOTSTRAP_MULT;
+        console.log(`[USD1] Balance ${availableQuote / 1e6} < floor ${refillFloor / 1e6}, refilling in-bundle → target ${refillTarget / 1e6}`);
+        const refill = await buildRefillSolToUsd1Ixs(mainWallet, refillTarget);
+        if (refill && refill.ixs.length > 0) {
+          refillIxs = refill.ixs;
+          // After the refill ix executes at the top of the funding tx, the
+          // wallet will hold ~refillTarget USD1. Use that for sub-wallet sizing
+          // so the iteration doesn't under-buy after a successful refill.
+          availableQuote = refillTarget;
+        } else if (refill && refill.ixs.length === 0) {
+          // No refill was actually needed (race: balance topped up between
+          // our read and the helper's read). Leave availableQuote as-is.
+        } else {
+          console.log("[USD1] In-bundle refill failed; proceeding with current USD1 balance.");
+        }
+      }
+    }
+  }
+  if (maxBuyAmount >= Number(availableQuote / 4)) {
+    maxBuyAmount = Number(availableQuote / 4);
+    console.log(`Max Buy Amount is too high. Set to 1/4 of main ${quoteSymbol} balance: `, maxBuyAmount / quoteUnit, availableQuote / quoteUnit);
   }
 
   if (curbotOnSolana && curbotOnSolana?.dexId == "raydium") {
@@ -1221,20 +1444,22 @@ async function prepareTransactions(botOnSolana: any, curbotOnSolana: any, isCPMM
         multiplier = 1.2;
       }
 
-      let rate = lpSize / (SOL_PRICE * Number(botOnSolana.maxBuy) * 4.5 * multiplier * 6);
+      // maxBuy * quoteUsdPrice = USD value of one buy; used to scale against lpSize (USD).
+      let rate = lpSize / (quoteUsdPrice * Number(botOnSolana.maxBuy) * 4.5 * multiplier * 6);
       if (rate < 1)
         maxBuyAmount = maxBuyAmount * rate;
 
-      console.log("Rate: ", rate, "lpSize: ", lpSize, "Sol Price: ", SOL_PRICE);
+      console.log("Rate: ", rate, "lpSize: ", lpSize, `${quoteSymbol} Price:`, quoteUsdPrice);
     }
   }
 
   if (sideBuy) {
-    maxBuyAmount = randomInt(1, 10) * LAMPORTS_PER_SOL / 100000;
+    // Small dust-sized side buy: 1-10 micro-units of the quote token.
+    maxBuyAmount = randomInt(1, 10) * quoteUnit / 100000;
   }
 
   console.log(sideBuy ? "==> SIDE BUY" : "==> MAIN BUY");
-  console.log("===> Final Max Buy Amount : ", maxBuyAmount / LAMPORTS_PER_SOL);
+  console.log(`===> Final Max Buy Amount : ${maxBuyAmount / quoteUnit} ${quoteSymbol}`);
 
   // Prepare transaction arrays
   let distSolArr = [];
@@ -1247,12 +1472,12 @@ async function prepareTransactions(botOnSolana: any, curbotOnSolana: any, isCPMM
   // Initialize amounts for buy transactions
   for (let i = 0; i < pattern.buyCount; i++) {
     const randfactor = getRandomNumber(0.9, 0.95, 2);
-    console.log("Buy Sol Amount:", randfactor * maxBuyAmount / LAMPORTS_PER_SOL);
-    console.log(`SOL Price: ${SOL_PRICE}`);
+    console.log(`Buy Quote Amount: ${randfactor * maxBuyAmount / quoteUnit} ${quoteSymbol}`);
+    console.log(`${quoteSymbol} USD Price: ${quoteUsdPrice}`);
     if (curbotOnSolana && curbotOnSolana?.dexId == "pumpswap") {
-      newMadeVolume += randfactor * maxBuyAmount / LAMPORTS_PER_SOL * SOL_PRICE * 1.9;
+      newMadeVolume += randfactor * maxBuyAmount / quoteUnit * quoteUsdPrice * 1.9;
     } else {
-      newMadeVolume += randfactor * maxBuyAmount / LAMPORTS_PER_SOL * SOL_PRICE * 1.8;
+      newMadeVolume += randfactor * maxBuyAmount / quoteUnit * quoteUsdPrice * 1.8;
     }
     distSolArr.push(randfactor * maxBuyAmount);
     minOutArr.push(new BN(0));
@@ -1262,12 +1487,13 @@ async function prepareTransactions(botOnSolana: any, curbotOnSolana: any, isCPMM
 
   const versionedTx = [];
   let sellCount = 0;
-  const mainWallet = Keypair.fromSecretKey(bs58.decode(botOnSolana.mainWallet.privateKey));
   const userBalance = await connection.getBalance(mainWallet.publicKey);
   console.log("User Wallet Address : ", mainWallet.publicKey.toBase58(), userBalance);
 
-  // add funds to new fresh wallets
-  const fundingIxs: TransactionInstruction[] = [];
+  // add funds to new fresh wallets. If we built a USD1 refill above, prepend
+  // its swap ixs so the refill executes atomically with the funding transfers
+  // at the head of the Jito bundle.
+  const fundingIxs: TransactionInstruction[] = [...refillIxs];
   for (let i = 0; i < MAKER_BOT_MAX_PER_TX; i++) {
     fundingIxs.push(
       SystemProgram.transfer({
@@ -1461,70 +1687,7 @@ async function executeTransactions(connection: Connection, wallet: Keypair, vers
 
       console.log("✅ New Made Volume: ", newMadeVolume);
 
-      const volumeMade = Number(updatedBot?.volumeMade) + newMadeVolume;
-
-      /**************** Bonus Logic ************************ */
-      const preIndex = Number(updatedBot?.volumeMade) / BONUS_THRESHOLD;
-      const newIndex = volumeMade / BONUS_THRESHOLD;
-      // Give bonus if crossed threshold
-      if (Math.floor(newIndex) > Math.floor(preIndex)) {
-        const bonusWalletKeypair = Keypair.fromSecretKey(
-          bs58.decode(BONUS_WALLET)
-        );
-        console.log(`✅✅✅ Giving bonus to ${wallet.publicKey.toBase58()}`);
-        const bonusTx = new Transaction();
-        let bonusAmount = 0;
-        switch (Math.floor(newIndex)) {
-          case 1:
-            bonusAmount = 0.001;
-            break;
-          case 5:
-            bonusAmount = 0.002;
-            break;
-          case 10:
-            bonusAmount = 0.003;
-            break;
-          case 30:
-            bonusAmount = 0.005;
-            break;
-          case 50:
-            bonusAmount = 0.007;
-          default:
-            bonusAmount = 0;
-            break;
-        }
-        if (bonusAmount > 0) {
-          bonusTx.add(
-            SystemProgram.transfer({
-              fromPubkey: bonusWalletKeypair.publicKey,
-              toPubkey: wallet.publicKey,
-              lamports: bonusAmount * LAMPORTS_PER_SOL,
-            })
-          );
-
-          const txSignature = await sendAndConfirmTransaction(
-            connection,
-            bonusTx,
-            [bonusWalletKeypair]
-          );
-
-          // Send notification to user about bonus received
-          try {
-            await bot.api.sendMessage(
-              botOnSolana.userId,
-              `🎉 <b>Bonus Received!</b>\n\n` +
-                `You've received a bonus of <code>${bonusAmount}</code> SOL for reaching ${formatNumberWithUnit(
-                  Math.floor(newIndex) * BONUS_THRESHOLD
-                )} volume!\n\n` +
-                `Transaction: <code>${txSignature}</code>`,
-              { parse_mode: "HTML" }
-            );
-          } catch (err) {
-            console.log("Error sending bonus notification to user:", err);
-          }
-        }
-      }
-      
+      const volumeMade = Number(updatedBot?.volumeMade) + newMadeVolume;     
       const makerMade = Number(updatedBot?.makerMade) + MAKER_BOT_MAX_PER_TX;
       const txDone = Number(updatedBot?.txDone) + MAKER_BOT_MAX_PER_TX + sellCount;
 
@@ -1534,10 +1697,6 @@ async function executeTransactions(connection: Connection, wallet: Keypair, vers
         txDone,
         status: volumeMade >= botOnSolana?.targetVolume ? BOT_STATUS.ARCHIVED_TARGET_VOLUME : BOT_STATUS.RUNNING,
       });
-
-      // Sleep after successful transaction
-      // console.log("sleeping seconds: ", delayTime - 30);
-      // await sleep((delayTime - 30) * 1000); // Subtract checkbundle time
       return true;
     } else {
       console.log("❌ Bundle failed with delayTime", delayTime, "- retrying immediately");
@@ -1555,69 +1714,6 @@ async function executeTransactions(connection: Connection, wallet: Keypair, vers
           console.log("✅ New Made Volume: ", newMadeVolume);
 
           const volumeMade = Number(updatedBot?.volumeMade) + newMadeVolume;
-
-          /**************** Bonus Logic ************************ */
-          const preIndex = Number(updatedBot?.volumeMade) / BONUS_THRESHOLD;
-          const newIndex = volumeMade / BONUS_THRESHOLD;
-          // Give bonus if crossed threshold
-          if (Math.floor(newIndex) > Math.floor(preIndex)) {
-            const bonusWalletKeypair = Keypair.fromSecretKey(
-              bs58.decode(BONUS_WALLET)
-            );
-            console.log(`✅✅✅ Giving bonus to ${wallet.publicKey.toBase58()}`);
-            const bonusTx = new Transaction();
-            let bonusAmount = 0;
-            switch (Math.floor(newIndex)) {
-              case 1:
-                bonusAmount = 0.001;
-                break;
-              case 5:
-                bonusAmount = 0.002;
-                break;
-              case 10:
-                bonusAmount = 0.003;
-                break;
-              case 30:
-                bonusAmount = 0.005;
-                break;
-              case 50:
-                bonusAmount = 0.007;
-              default:
-                bonusAmount = 0;
-                break;
-            }
-            if (bonusAmount > 0) {
-              bonusTx.add(
-                SystemProgram.transfer({
-                  fromPubkey: bonusWalletKeypair.publicKey,
-                  toPubkey: wallet.publicKey,
-                  lamports: bonusAmount * LAMPORTS_PER_SOL,
-                })
-              );
-
-              const txSignature = await sendAndConfirmTransaction(
-                connection,
-                bonusTx,
-                [bonusWalletKeypair]
-              );
-
-              // Send notification to user about bonus received
-              try {
-                await bot.api.sendMessage(
-                  botOnSolana.userId,
-                  `🎉 <b>Bonus Received!</b>\n\n` +
-                    `You've received a bonus of <code>${bonusAmount}</code> SOL for reaching ${formatNumberWithUnit(
-                      Math.floor(newIndex) * BONUS_THRESHOLD
-                    )} volume!\n\n` +
-                    `Transaction: <code>${txSignature}</code>`,
-                  { parse_mode: "HTML" }
-                );
-              } catch (err) {
-                console.log("Error sending bonus notification to user:", err);
-              }
-            }
-          }
-
           const makerMade = Number(updatedBot?.makerMade) + MAKER_BOT_MAX_PER_TX;
           const txDone = Number(updatedBot?.txDone) + MAKER_BOT_MAX_PER_TX + sellCount;
 
